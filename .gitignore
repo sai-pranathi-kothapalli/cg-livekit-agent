@@ -1,0 +1,50 @@
+# Environment variables - NEVER COMMIT
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+
+# Logs
+*.log
+*.pid
+agent.log
+agent.pid
+entrypoint.log
+job_requests.log
+entrypoint_errors.log
+
+# IDE
+.vscode/
+.idea/
+.antigravity/
+.cursor/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# LiveKit specific
+KMS/logs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Documentation (keep in repo but ignore if needed)
+# *.md
