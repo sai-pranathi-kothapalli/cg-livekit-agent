@@ -40,6 +40,7 @@ class OrchestratorLLM(llm.LLM):
         session_id: str,
         candidate_name: Optional[str] = None,
         candidate_role: Optional[str] = None,
+        action_type: str = "interview",
         **kwargs
     ):
         """
@@ -50,6 +51,7 @@ class OrchestratorLLM(llm.LLM):
             session_id: Session ID (room name or booking token) - same ID = same conversation
             candidate_name: Candidate name (optional, for context memory)
             candidate_role: Candidate role (optional, for context memory)
+            action_type: "interview" for interviews (6k context, 30 msgs, skip handling). Default "interview".
             **kwargs: Additional arguments (ignored for compatibility)
         """
         if not HTTPX_AVAILABLE:
@@ -70,6 +72,7 @@ class OrchestratorLLM(llm.LLM):
         self._session_id = session_id
         self._candidate_name = candidate_name
         self._candidate_role = candidate_role
+        self._action_type = action_type
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             headers={
@@ -80,7 +83,7 @@ class OrchestratorLLM(llm.LLM):
         
         logger.info(
             f"✅ OrchestratorLLM initialized: "
-            f"session_id={session_id}, "
+            f"session_id={session_id}, action_type={action_type}, "
             f"candidate_name={candidate_name or 'not set'}, "
             f"candidate_role={candidate_role or 'not set'}"
         )
@@ -118,6 +121,7 @@ class OrchestratorLLM(llm.LLM):
             session_id=self._session_id,
             candidate_name=self._candidate_name,
             candidate_role=self._candidate_role,
+            action_type=self._action_type,
             chat_ctx=chat_ctx,
         )
     
@@ -138,12 +142,14 @@ class OrchestratorChat:
         session_id: str,
         candidate_name: Optional[str],
         candidate_role: Optional[str],
+        action_type: str = "interview",
         chat_ctx: Optional[llm.ChatContext] = None,
     ):
         self._client = client
         self._session_id = session_id
         self._candidate_name = candidate_name
         self._candidate_role = candidate_role
+        self._action_type = action_type
         
         # Track if we've already returned the response
         self._response_returned = False
@@ -232,6 +238,7 @@ class OrchestratorChat:
                     "speaker": "user",
                     "text": self._user_text,
                     "system_prompt": self._system_prompt,
+                    "action_type": self._action_type,  # "interview" = 6k context, 30 msgs, skip handling
                 }
                 
                 # Add candidate context if available
