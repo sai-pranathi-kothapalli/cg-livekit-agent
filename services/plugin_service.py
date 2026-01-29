@@ -38,6 +38,13 @@ except ImportError:
     GOOGLE_AVAILABLE = False
     google = None  # type: ignore
 
+try:
+    from services.grok_llm import GrokLLM  # type: ignore
+    GROK_AVAILABLE = True
+except ImportError:
+    GROK_AVAILABLE = False
+    GrokLLM = None  # type: ignore
+
 from app.config import Config  # type: ignore
 from app.utils.logger import get_logger  # type: ignore
 from app.utils.exceptions import ConfigurationError, ServiceError  # type: ignore
@@ -75,12 +82,21 @@ class PluginService:
         self.config = config
         logger.debug("PluginService initialized")
     
-    async def initialize_plugins(self, room: rtc.Room) -> Dict[str, Any]:
+    async def initialize_plugins(
+        self, 
+        room: rtc.Room,
+        booking_token: Optional[str] = None,
+        candidate_name: Optional[str] = None,
+        candidate_role: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Initialize all required plugins for the agent session.
         
         Args:
             room: LiveKit room instance (for transcript forwarding)
+            booking_token: Booking token (for orchestrator session_id)
+            candidate_name: Candidate name (for orchestrator context)
+            candidate_role: Candidate role (for orchestrator context)
             
         Returns:
             Dictionary containing initialized plugins:
@@ -100,7 +116,7 @@ class PluginService:
             stt_plugin = self._initialize_stt()
             
             # Initialize LLM plugin with transcript forwarding
-            llm_plugin = self._initialize_llm(room)
+            llm_plugin = self._initialize_llm(room, booking_token, candidate_name, candidate_role)
             
             # Initialize TTS plugin
             tts_plugin = self._initialize_tts()
@@ -202,18 +218,72 @@ class PluginService:
         
         return stt_plugin
     
-    def _initialize_llm(self, room: rtc.Room):
+    def _initialize_llm(self, room: rtc.Room, booking_token: Optional[str] = None, candidate_name: Optional[str] = None, candidate_role: Optional[str] = None):
         """
         Initialize LLM plugin with optional cloud fallback.
-        Supports enable/disable flags for both self-hosted and cloud services.
+        If orchestrator is enabled, use it as primary LLM (replaces all other LLMs).
+        Otherwise: Self-hosted (primary) -> Gemini (first fallback) -> Grok (fallback of Gemini).
         
         Args:
             room: LiveKit room instance
+            booking_token: Booking token (for session_id)
+            candidate_name: Candidate name (for orchestrator context)
+            candidate_role: Candidate role (for orchestrator context)
             
         Returns:
             Configured LLM plugin (with fallback if enabled)
         """
-        logger.info("[DEBUG] LLM CONFIGURATION:")
+        # Check if orchestrator is enabled - if so, use it exclusively
+        if self.config.orchestrator_llm.enabled:
+            logger.info("[DEBUG] LLM CONFIGURATION: Using Orchestrator (replaces all other LLMs)")
+            try:
+                from services.orchestrator_llm import OrchestratorLLM
+                
+                # Use room name or booking token as session_id
+                session_id = booking_token or room.name
+                
+                orchestrator_llm = OrchestratorLLM(
+                    base_url=self.config.orchestrator_llm.base_url,
+                    session_id=session_id,
+                    candidate_name=candidate_name,
+                    candidate_role=candidate_role,
+                )
+                logger.info(f"   [OK] Orchestrator LLM initialized: session_id={session_id}")
+                logger.info(f"   [OK] Candidate context: name={candidate_name or 'not set'}, role={candidate_role or 'not set'}")
+                
+                # Orchestrator handles history internally, so we don't need history wrapper
+                # But we still wrap for transcript forwarding and timing
+                if hasattr(orchestrator_llm, 'chat'):
+                    from app.services.transcript_service import TranscriptForwardingService  # type: ignore
+                    from services.timing_llm_wrapper import TimingLLMWrapper
+                    from services.quiet_transcript_wrapper import QuietTranscriptWrapper
+                    from services.transcript_storage_wrapper import TranscriptStorageWrapper
+                    
+                    # Create transcript service and wrap it to reduce spam
+                    original_transcript_service = TranscriptForwardingService(room)
+                    quiet_transcript_service = QuietTranscriptWrapper(original_transcript_service)
+                    
+                    # Wrap with storage to save transcripts to database
+                    transcript_service = TranscriptStorageWrapper(
+                        original_transcript_service=quiet_transcript_service,
+                        room_name=room.name,
+                    )
+                    
+                    original_chat = orchestrator_llm.chat
+                    
+                    # Wrap with timing (orchestrator handles history, so no history wrapper needed)
+                    timing_wrapper = TimingLLMWrapper(original_chat)
+                    
+                    orchestrator_llm.chat = timing_wrapper
+                    logger.info("   [OK] Orchestrator LLM wrapped for transcript forwarding and timing")
+                
+                return orchestrator_llm
+            except Exception as e:
+                logger.error(f"   [ERR] Failed to initialize Orchestrator LLM: {e}", exc_info=True)
+                raise
+        
+        # Fallback to traditional LLM chain if orchestrator is disabled
+        logger.info("[DEBUG] LLM CONFIGURATION: Self-hosted -> Gemini -> Grok")
         
         primary_llm = None
         fallback_llm = None
@@ -232,25 +302,63 @@ class PluginService:
                 logger.info("   [OK] Self-hosted LLM initialized")
             except Exception as e:
                 logger.error(f"   [ERR] Failed to initialize self-hosted LLM: {e}", exc_info=True)
-                if not self.config.gemini_llm.enabled:
+                if not (self.config.gemini_llm.enabled or self.config.grok_llm.enabled):
                     raise  # No fallback available, must fail
         else:
             logger.warning("   [WARN]  Self-hosted LLM: DISABLED (via SELF_HOSTED_LLM_ENABLED=false)")
         
-        # Initialize cloud fallback LLM (Gemini)
+        # Cloud fallback order: Gemini (first fallback), then Grok (fallback of Gemini)
+        # 1. Initialize Gemini if enabled (first fallback after self-hosted)
+        gemini_llm = None
         if self.config.gemini_llm.enabled and GOOGLE_AVAILABLE:
             if self.config.gemini_llm.api_key:
                 try:
-                    fallback_llm = google.LLM(
+                    gemini_llm = google.LLM(
                         model=self.config.gemini_llm.model,
                         api_key=self.config.gemini_llm.api_key,
                     )
                     logger.info(f"   [OK] Cloud fallback LLM (Gemini {self.config.gemini_llm.model}) initialized")
                 except Exception as e:
                     logger.warning(f"   [WARN]  Failed to initialize Gemini LLM: {e}")
+            else:
+                logger.warning("   [WARN]  Gemini LLM enabled but API key not provided")
         elif self.config.gemini_llm.enabled and not GOOGLE_AVAILABLE:
             logger.warning("   [WARN]  Gemini LLM enabled but plugin not installed")
             logger.warning("   Install with: pip install livekit-plugins-google")
+        
+        # 2. Initialize Grok if enabled (fallback of Gemini, or sole cloud fallback)
+        grok_llm = None
+        if self.config.grok_llm.enabled and GROK_AVAILABLE:
+            if self.config.grok_llm.api_key:
+                try:
+                    grok_llm = GrokLLM(
+                        model=self.config.grok_llm.model,
+                        api_key=self.config.grok_llm.api_key,
+                    )
+                    logger.info(f"   [OK] Cloud fallback LLM (Grok {self.config.grok_llm.model}) initialized")
+                except Exception as e:
+                    logger.warning(f"   [WARN]  Failed to initialize Grok LLM: {e}")
+            else:
+                logger.warning("   [WARN]  Grok LLM enabled but API key not provided")
+        elif self.config.grok_llm.enabled and not GROK_AVAILABLE:
+            logger.warning("   [WARN]  Grok LLM enabled but xai_sdk not installed")
+            logger.warning("   Install with: pip install xai-sdk")
+        
+        # 3. Build fallback chain: Gemini (first) -> Grok (second). If both available, wrap as FallbackLLM(Gemini, Grok).
+        if gemini_llm and grok_llm:
+            from services.fallback_llm import FallbackLLM
+            fallback_llm = FallbackLLM(
+                primary_llm=gemini_llm,
+                fallback_llm=grok_llm,
+                max_primary_failures=3
+            )
+            logger.info("   [OK] Cloud fallback chain: Gemini (first) -> Grok (second)")
+        elif gemini_llm:
+            fallback_llm = gemini_llm
+        elif grok_llm:
+            fallback_llm = grok_llm
+        else:
+            fallback_llm = None
         
         # Determine final LLM configuration
         if primary_llm and fallback_llm:
@@ -279,10 +387,17 @@ class PluginService:
             from app.services.history_managed_llm_wrapper import HistoryManagedLLMWrapper  # type: ignore
             from services.timing_llm_wrapper import TimingLLMWrapper
             from services.quiet_transcript_wrapper import QuietTranscriptWrapper
+            from services.transcript_storage_wrapper import TranscriptStorageWrapper
             
             # Create transcript service and wrap it to reduce spam
             original_transcript_service = TranscriptForwardingService(room)
-            transcript_service = QuietTranscriptWrapper(original_transcript_service)
+            quiet_transcript_service = QuietTranscriptWrapper(original_transcript_service)
+            
+            # Wrap with storage to save transcripts to database
+            transcript_service = TranscriptStorageWrapper(
+                original_transcript_service=quiet_transcript_service,
+                room_name=room.name,
+            )
             
             original_chat = llm_plugin.chat
             

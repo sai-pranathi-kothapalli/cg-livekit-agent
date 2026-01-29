@@ -10,7 +10,9 @@ import json
 import logging
 import sys
 import os
+import time
 from typing import Optional
+from datetime import datetime, timedelta
 
 from livekit import agents, rtc
 from livekit.agents import JobContext, AgentSession, room_io
@@ -24,6 +26,7 @@ if backend_path.exists() and str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from app.config import Config, get_config  # type: ignore
+from app.utils.datetime_utils import get_now_ist  # type: ignore
 from agents.professional_arjun import ProfessionalArjun
 from agents.utils import get_track_source_name
 # from app.services.application_form_service import ApplicationFormService  # Service not found in backend
@@ -87,10 +90,28 @@ async def entrypoint(ctx: JobContext) -> None:
         
         config = get_config()
         
+        # Extract booking token from room name or metadata
+        booking_token = None
+        room_name = ctx.room.name
+        try:
+            # Try to extract from room name (format: "interview_<token>" or just token)
+            if room_name.startswith("interview_"):
+                booking_token = room_name.replace("interview_", "")
+            elif len(room_name) == 32 and room_name.replace("_", "").replace("-", "").isalnum():
+                booking_token = room_name
+            # Try room metadata
+            if not booking_token and hasattr(ctx.room, 'metadata') and ctx.room.metadata:
+                import json
+                metadata = json.loads(ctx.room.metadata)
+                booking_token = metadata.get('booking_token') or metadata.get('token')
+        except Exception as e:
+            logger.warning(f"Could not extract booking token: {e}")
+        
         # Log job details with CRITICAL level
         logger.critical(f"[INFO] JOB DETAILS:")
         logger.critical(f"   Job ID: {ctx.job.id}")
-        logger.critical(f"   Room Name: {ctx.room.name}")
+        logger.critical(f"   Room Name: {room_name}")
+        logger.critical(f"   Booking Token: {booking_token or 'unknown'}")
         logger.critical(f"   Agent Name: {config.livekit.agent_name}")
         
         # Write job details to file
@@ -186,12 +207,58 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.warning(warning_msg)
             print(warning_msg, flush=True)
         
+        # Extract candidate info from booking for orchestrator
+        candidate_name = None
+        candidate_role = None
+        if booking_token:
+            try:
+                from app.services.booking_service import BookingService  # type: ignore
+                booking_service = BookingService(config)
+                booking = booking_service.get_booking(booking_token)
+                
+                if booking:
+                    # Try to get candidate name from booking or application
+                    # Check if booking has application_form_id to fetch application data
+                    application_form_id = booking.get('application_form_id')
+                    if application_form_id:
+                        # TODO: Fetch application data if ApplicationFormService is available
+                        # For now, we'll use booking metadata if available
+                        pass
+                    
+                    # Try to get name from booking metadata or user info
+                    # candidate_name = booking.get('candidate_name') or booking.get('name')
+                    # candidate_role = booking.get('candidate_role') or booking.get('post') or booking.get('position')
+                    
+                    logger.info(f"[DEBUG] Candidate info: name={candidate_name or 'not set'}, role={candidate_role or 'not set'}")
+            except Exception as e:
+                logger.warning(f"Could not extract candidate info: {e}")
+        
         # Step 4: Initialize plugins
         logger.info("Step 4: Initializing Plugins (STT, LLM, TTS)...")
         print("Step 4: Initializing Plugins (STT, LLM, TTS)...", flush=True)
         try:
             plugin_service = PluginService(config)
-            plugins = await plugin_service.initialize_plugins(ctx.room)
+            plugins = await plugin_service.initialize_plugins(
+                ctx.room,
+                booking_token=booking_token,
+                candidate_name=candidate_name,
+                candidate_role=candidate_role
+            )
+            
+            # CRITICAL: Validate TTS plugin is actually initialized
+            if not plugins.get("tts"):
+                raise RuntimeError("TTS plugin is None - agent cannot speak!")
+            logger.info(f"[OK] TTS plugin type: {type(plugins['tts']).__name__}")
+            print(f"[OK] TTS plugin type: {type(plugins['tts']).__name__}", flush=True)
+            
+            # Validate other plugins
+            if not plugins.get("stt"):
+                raise RuntimeError("STT plugin is None - agent cannot hear!")
+            if not plugins.get("llm"):
+                raise RuntimeError("LLM plugin is None - agent cannot think!")
+            if not plugins.get("vad"):
+                raise RuntimeError("VAD plugin is None - turn detection will fail!")
+            
             logger.info("[OK] Step 4: Plugins initialized successfully!")
             print("[OK] Step 4: Plugins initialized successfully!", flush=True)
         except Exception as e:
@@ -200,6 +267,74 @@ async def entrypoint(ctx: JobContext) -> None:
             print(error_msg, flush=True)
             print(f"   Error type: {type(e).__name__}", flush=True)
             raise
+        
+        # Store references for transcript saving and evaluation
+        transcript_storage = None
+        try:
+            from services.transcript_storage_wrapper import get_transcript_storage_service  # type: ignore
+            transcript_storage = get_transcript_storage_service()
+        except Exception as e:
+            logger.warning(f"Could not get transcript storage service: {e}")
+        
+        # Store interview start time for duration calculation
+        interview_start_time = get_now_ist()
+        
+        # Get booking data to determine interview duration limit
+        interview_duration_minutes = 30  # Default duration
+        scheduled_end_time = None
+        if booking_token:
+            try:
+                from app.services.booking_service import BookingService  # type: ignore
+                from app.services.slot_service import SlotService  # type: ignore
+                booking_service = BookingService(config)
+                slot_service = SlotService(config)
+                booking = booking_service.get_booking(booking_token)
+                
+                if booking:
+                    # Try to get duration from slot if booking has slot_id
+                    slot_id = booking.get('slot_id')
+                    if slot_id:
+                        try:
+                            slot = slot_service.get_slot(slot_id)
+                            if slot and slot.get('end_time'):
+                                # Calculate duration from slot
+                                slot_start_str = slot.get('start_time') or slot.get('slot_datetime')
+                                slot_end_str = slot.get('end_time')
+                                
+                                if slot_start_str and slot_end_str:
+                                    try:
+                                        slot_start = datetime.fromisoformat(slot_start_str.replace('Z', '+00:00'))
+                                        slot_end = datetime.fromisoformat(slot_end_str.replace('Z', '+00:00'))
+                                        duration_seconds = (slot_end - slot_start).total_seconds()
+                                        interview_duration_minutes = int(duration_seconds / 60)
+                                        scheduled_end_time = slot_end
+                                        logger.info(f"⏰ Using slot duration: {interview_duration_minutes} minutes (from slot {slot_id})")
+                                    except Exception as e:
+                                        logger.warning(f"Could not parse slot times: {e}")
+                        except Exception as e:
+                            logger.warning(f"Could not fetch slot: {e}")
+                    
+                    # If no slot duration, use scheduled_at + default duration
+                    if not scheduled_end_time and booking.get('scheduled_at'):
+                        scheduled_at_str = booking.get('scheduled_at')
+                        try:
+                            if 'Z' in scheduled_at_str or '+00:00' in scheduled_at_str:
+                                scheduled_at = datetime.fromisoformat(scheduled_at_str.replace('Z', '+00:00'))
+                            else:
+                                scheduled_at = datetime.fromisoformat(scheduled_at_str)
+                            
+                            # Default interview duration: 30 minutes
+                            scheduled_end_time = scheduled_at + timedelta(minutes=interview_duration_minutes)
+                            logger.info(f"⏰ Interview scheduled: {scheduled_at}, will end at: {scheduled_end_time} ({interview_duration_minutes} min duration)")
+                        except Exception as e:
+                            logger.warning(f"Could not parse scheduled_at: {e}, using default duration")
+            except Exception as e:
+                logger.warning(f"Could not fetch booking for duration: {e}")
+        
+        if scheduled_end_time:
+            logger.info(f"⏰ Interview time limit: {interview_duration_minutes} minutes (ends at {scheduled_end_time})")
+        else:
+            logger.info(f"⏰ Using default interview duration: {interview_duration_minutes} minutes from start")
         
         # Step 5: Turn detection - Using VAD only
         logger.info("Step 5: Initializing Turn Detection...")
@@ -260,8 +395,11 @@ async def entrypoint(ctx: JobContext) -> None:
             agent = ProfessionalArjun(
                 candidate_profile=candidate_profile,
                 job_description=jd_data,
-                base_instructions=agent_instructions if agent_instructions else None
+                base_instructions=agent_instructions if agent_instructions else None,
+                duration_minutes=interview_duration_minutes
             )
+            logger.info(f"✅ Agent created with duration: {interview_duration_minutes} minutes")
+            print(f"✅ Agent created with duration: {interview_duration_minutes} minutes", flush=True)
             logger.info("[OK] Agent instance created successfully")
             print("[OK] Agent instance created successfully", flush=True)
         except Exception as e:
@@ -275,7 +413,7 @@ async def entrypoint(ctx: JobContext) -> None:
         print(f"📊 Room state before session.start: connected={ctx.room.isconnected()}, participants={len(ctx.room.remote_participants)}", flush=True)
         
         # Add event handlers to track user speech and agent replies
-        _setup_session_event_handlers(session, logger)
+        _setup_session_event_handlers(session, logger, booking_token, room_name, transcript_storage)
         
         # Start session - this will handle all user speech automatically
         logger.info("[PROD] Starting AgentSession (will handle user speech automatically)...")
@@ -308,12 +446,31 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.info("📊 Session already started (returned None)")
             print("📊 Session already started", flush=True)
         
+        # CRITICAL: Verify session components are initialized
+        await asyncio.sleep(0.5)  # Brief pause for session to initialize
+        if not session.tts:
+            logger.error("[ERR] Session TTS is None after start() call!")
+            print("[ERR] Session TTS is None after start() call!", flush=True)
+            raise RuntimeError("Session TTS failed to initialize - agent cannot speak!")
+        if not session.llm:
+            logger.error("[ERR] Session LLM is None after start() call!")
+            print("[ERR] Session LLM is None after start() call!", flush=True)
+            raise RuntimeError("Session LLM failed to initialize - agent cannot think!")
+        if not ctx.room.isconnected():
+            logger.error("[ERR] Room is not connected after session start!")
+            print("[ERR] Room is not connected after session start!", flush=True)
+            raise RuntimeError("Room connection lost - agent cannot function!")
+        logger.info(f"[OK] Session components verified: TTS={session.tts is not None}, LLM={session.llm is not None}, Room connected={ctx.room.isconnected()}")
+        print(f"[OK] Session components verified", flush=True)
+        
         # Log session state
         logger.info(f"[DEBUG] Session state check:")
         logger.info(f"   Agent state: {session.agent_state}")
         logger.info(f"   User state: {session.user_state}")
         logger.info(f"   Current speech: {session.current_speech is not None}")
+        logger.info(f"   TTS plugin: {type(session.tts).__name__ if session.tts else 'None'}")
         print(f"[DEBUG] Session state: agent={session.agent_state}, user={session.user_state}")
+        print(f"[DEBUG] TTS plugin: {type(session.tts).__name__ if session.tts else 'None'}")
         
         # Log room state after starting session
         logger.info(f"📊 Room state after session.start: connected={ctx.room.isconnected()}, remote_participants={len(ctx.room.remote_participants)}")
@@ -381,6 +538,26 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.info("Step 6b: Generating greeting...")
             print("Step 6b: Generating greeting...")
             try:
+                # CRITICAL: Verify session is actually running before generating reply
+                # Check if session has required components
+                if not hasattr(session, 'tts') or session.tts is None:
+                    raise RuntimeError("Session TTS is None - cannot generate reply!")
+                if not hasattr(session, 'llm') or session.llm is None:
+                    raise RuntimeError("Session LLM is None - cannot generate reply!")
+                if not ctx.room.isconnected():
+                    raise RuntimeError("Room is not connected - cannot generate reply!")
+                
+                # Verify TTS is available
+                if not hasattr(session, 'tts') or session.tts is None:
+                    raise RuntimeError("TTS plugin is None in session - cannot speak!")
+                
+                logger.info(f"   Session running: {getattr(session, '_running', False)}")
+                logger.info(f"   TTS available: {session.tts is not None}")
+                logger.info(f"   Agent state before greeting: {session.agent_state}")
+                print(f"   Session running: {getattr(session, '_running', False)}")
+                print(f"   TTS available: {session.tts is not None}")
+                print(f"   Agent state: {session.agent_state}")
+                
                 # Set flag to skip transcript for greeting
                 from app.services.history_managed_llm_wrapper import set_skip_transcript  # type: ignore
                 set_skip_transcript(True)
@@ -388,18 +565,25 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.info("   Calling session.generate_reply() for greeting...")
                 print("   Calling session.generate_reply() for greeting...")
                 
-                await session.generate_reply(
-                    instructions="""
-                    As Alyza, start the interview with a professional, welcoming opening:
-                    - Introduce yourself warmly: "Hello! I am Alyza, a professional Banking Interviewer." (Ensure NO brackets are used).
-                   
-                    - Ask ONLY ONE simple question: "To begin, could you please tell me a bit about yourself and your educational background?"
-                    - Keep it professional, clear, and encouraging - maintain a formal yet approachable tone.
-                    - Show genuine interest in their learning journey.
-                    - Make them feel comfortable and supported.
-                    - CRITICAL: Ask only ONE question. Wait for their response before asking about interests or projects.
-                    """
-                )
+                # Add timeout to prevent hanging
+                try:
+                    await asyncio.wait_for(
+                        session.generate_reply(
+                            instructions="""
+                            As Alyza, start the interview with a professional, welcoming opening:
+                            - Introduce yourself warmly: "Hello! I am Alyza, a professional Banking Interviewer." (Ensure NO brackets are used).
+                           
+                            - Ask ONLY ONE simple question: "To begin, could you please tell me a bit about yourself and your educational background?"
+                            - Keep it professional, clear, and encouraging - maintain a formal yet approachable tone.
+                            - Show genuine interest in their learning journey.
+                            - Make them feel comfortable and supported.
+                            - CRITICAL: Ask only ONE question. Wait for their response before asking about interests or projects.
+                            """
+                        ),
+                        timeout=60.0  # 60 second timeout for greeting generation
+                    )
+                except asyncio.TimeoutError:
+                    raise RuntimeError("generate_reply timed out after 60 seconds - TTS or LLM may be stuck!")
                 
                 # Reset flag after greeting
                 set_skip_transcript(False)
@@ -407,7 +591,28 @@ async def entrypoint(ctx: JobContext) -> None:
                 print("[OK] Step 6b: Success - Greeting generated! (transcript skipped)")
                 
                 # CRITICAL: Verify session is ready to listen after greeting
-                await asyncio.sleep(1)  # Brief pause for state to update
+                await asyncio.sleep(2)  # Increased pause for state to update and audio to play
+                
+                # Check if agent published audio tracks
+                local_participant = ctx.room.local_participant
+                audio_tracks_published = False
+                if local_participant:
+                    for track_pub in local_participant.track_publications.values():
+                        if track_pub.kind == rtc.TrackKind.KIND_AUDIO:
+                            audio_tracks_published = True
+                            # LocalTrackPublication uses 'sid', RemoteTrackPublication uses 'track_sid'
+                            track_id = getattr(track_pub, 'sid', getattr(track_pub, 'track_sid', 'unknown'))
+                            logger.info(f"   🔊 Agent audio track published: {track_id}, muted={track_pub.muted}")
+                            print(f"   🔊 Agent audio track published: {track_id}")
+                            break
+                
+                if not audio_tracks_published:
+                    logger.warning("[WARN]  No audio tracks published by agent - user may not hear agent!")
+                    print("[WARN]  No audio tracks published by agent!")
+                else:
+                    logger.info("[OK] Agent audio track is published - user should hear agent")
+                    print("[OK] Agent audio track is published")
+                
                 logger.info(f"[DEBUG] Post-greeting session state check:")
                 logger.info(f"   Agent state: {session.agent_state}")
                 logger.info(f"   User state: {session.user_state}")
@@ -458,11 +663,12 @@ async def entrypoint(ctx: JobContext) -> None:
         print("--- Entrypoint Active (Interview in progress) ---")
         print("💡 AgentSession is listening for user speech automatically")
         
-        import time
         session_start_time = time.time()
         last_health_check = time.time()
         consecutive_errors = 0
         max_consecutive_errors = 5
+        interview_time_limit_reached = False
+        warning_sent = False  # Track if 2-minute warning was sent
         
         # Log initial room state
         logger.info(f"[DEBUG] Room monitoring started - connected: {ctx.room.isconnected()}, remote_participants: {len(ctx.room.remote_participants)}")
@@ -471,9 +677,139 @@ async def entrypoint(ctx: JobContext) -> None:
         print(f"[DEBUG] Session state: agent={session.agent_state}, user={session.user_state}")
         
         try:
-            while ctx.room.isconnected():
-                # Log session state periodically to see if it's responding
-                await asyncio.sleep(5)
+            while ctx.room.isconnected() and not interview_time_limit_reached:
+                # Check if interview time limit has been reached
+                current_time_ist = get_now_ist()
+                elapsed_minutes = (current_time_ist - interview_start_time).total_seconds() / 60
+                
+                # Check time limit (either scheduled end time or duration from start)
+                time_limit_reached = False
+                time_remaining_minutes = 0
+                
+                if scheduled_end_time:
+                    # Use scheduled end time if available
+                    time_remaining_minutes = (scheduled_end_time - current_time_ist).total_seconds() / 60
+                    if current_time_ist >= scheduled_end_time:
+                        time_limit_reached = True
+                        logger.info(f"⏰ Interview time limit reached (scheduled end time: {scheduled_end_time})")
+                else:
+                    # Use duration from start
+                    time_remaining_minutes = interview_duration_minutes - elapsed_minutes
+                    if elapsed_minutes >= interview_duration_minutes:
+                        time_limit_reached = True
+                        logger.info(f"⏰ Interview duration limit reached ({interview_duration_minutes} minutes elapsed)")
+                
+                # Send time remaining update every 10 seconds (for timer display)
+                # Use a simple variable to track last update time
+                if 'last_time_update' not in locals():
+                    last_time_update = interview_start_time
+                
+                time_since_last_update = (current_time_ist - last_time_update).total_seconds()
+                if time_since_last_update >= 10:
+                    try:
+                        time_update_message = json.dumps({
+                            "type": "time_remaining",
+                            "time_remaining_minutes": max(0, time_remaining_minutes),
+                        }).encode('utf-8')
+                        
+                        await ctx.room.local_participant.publish_data(
+                            time_update_message,
+                            topic="lk-chat",
+                            reliable=False,  # Use unreliable for frequent updates
+                        )
+                        last_time_update = current_time_ist
+                        logger.debug(f"⏰ Sent time remaining update: {time_remaining_minutes:.1f} minutes")
+                    except Exception as e:
+                        logger.debug(f"⚠️  Failed to send time update: {e}")
+                
+                # Send 2-minute warning before time limit
+                if not warning_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 2:
+                    warning_sent = True
+                    try:
+                        warning_message = json.dumps({
+                            "type": "interview_warning",
+                            "message": f"Interview will end in approximately {int(time_remaining_minutes)} minute(s). Please wrap up your responses.",
+                        }).encode('utf-8')
+                        
+                        await ctx.room.local_participant.publish_data(
+                            warning_message,
+                            topic="lk-chat",
+                            reliable=True,
+                        )
+                        logger.info(f"⚠️  Sent 2-minute warning ({(time_remaining_minutes):.1f} min remaining)")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Failed to send warning: {e}")
+                
+                if time_limit_reached:
+                    interview_time_limit_reached = True
+                    logger.info("⏰ Interview time limit reached - ending interview gracefully")
+                    print("⏰ Interview time limit reached - ending interview", flush=True)
+                    
+                    # Send final closing message from agent with clear instructions
+                    try:
+                        closing_instructions = """The interview time has been completed. Thank the candidate warmly and inform them that:
+1. The interview is now complete
+2. They will be redirected to the evaluation page shortly
+3. They can view their interview results and evaluation details there
+
+Keep it brief, professional, and clear - about 2-3 sentences. Example: "Thank you [Name] for your time today. Our interview time has been completed. You will now be redirected to the evaluation page where you can view your interview results and detailed feedback. Best of luck!" """
+                        
+                        await session.generate_reply(instructions=closing_instructions)
+                        await asyncio.sleep(5)  # Wait for closing message to be fully spoken (increased from 3 to 5 seconds)
+                        logger.info("✅ Closing message completed")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Could not generate closing message: {e}")
+                        # Even if message fails, continue with completion
+                    
+                    # Send completion signal to frontend via data channel
+                    try:
+                        completion_message = json.dumps({
+                            "type": "interview_completed",
+                            "message": "Interview completed. Redirecting to evaluation page...",
+                            "token": booking_token,
+                            "duration_minutes": int(elapsed_minutes),
+                        }).encode('utf-8')
+                        
+                        await ctx.room.local_participant.publish_data(
+                            completion_message,
+                            topic="lk-chat",
+                            reliable=True,  # Use reliable for important messages
+                        )
+                        logger.info("✅ Sent interview completion signal to frontend")
+                        print("✅ Sent completion signal to frontend", flush=True)
+                    except Exception as e:
+                        logger.warning(f"⚠️  Failed to send completion signal: {e}")
+                    
+                    # Give a moment for the message to be sent, then end gracefully
+                    await asyncio.sleep(2)
+                    
+                    # Update booking status to completed
+                    if booking_token:
+                        try:
+                            from app.services.booking_service import BookingService  # type: ignore
+                            booking_service = BookingService(config)
+                            booking_service.update_booking_status(booking_token, "completed")
+                            logger.info(f"✅ Updated booking status to 'completed' for {booking_token}")
+                        except Exception as e:
+                            logger.warning(f"⚠️  Failed to update booking status: {e}")
+                    
+                    # Disconnect from room to end interview
+                    try:
+                        logger.info("🔌 Disconnecting from room to end interview")
+                        await ctx.room.disconnect()
+                        logger.info("✅ Successfully disconnected from room")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Error disconnecting from room: {e}")
+                    
+                    # Break out of loop to end interview
+                    break
+                
+                # Check time more frequently (every 1 second) when close to time limit
+                # This ensures we catch the exact moment time runs out
+                if time_remaining_minutes <= 1:
+                    await asyncio.sleep(1)  # Check every second when < 1 minute remaining
+                else:
+                    await asyncio.sleep(5)  # Check every 5 seconds otherwise
                 
                 # Every 10 seconds, log session state
                 if time.time() - last_health_check >= 10:
@@ -494,8 +830,20 @@ async def entrypoint(ctx: JobContext) -> None:
                 if current_time - last_health_check >= 30:  # Every 30 seconds
                     elapsed = time.time() - session_start_time
                     participant_count = len(ctx.room.remote_participants)
+                    
+                    # Show time remaining if limit is set
+                    time_remaining = ""
+                    if scheduled_end_time:
+                        remaining = (scheduled_end_time - current_time_ist).total_seconds() / 60
+                        if remaining > 0:
+                            time_remaining = f", {remaining:.1f} min remaining"
+                    elif interview_duration_minutes:
+                        remaining = interview_duration_minutes - elapsed_minutes
+                        if remaining > 0:
+                            time_remaining = f", {remaining:.1f} min remaining"
+                    
                     health_summary = (
-                        f"💓 Session health: {elapsed/60:.1f} min elapsed, "
+                        f"💓 Session health: {elapsed/60:.1f} min elapsed{time_remaining}, "
                         f"{participant_count} participants, "
                         f"room connected: {ctx.room.isconnected()}"
                     )
@@ -531,6 +879,57 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.warning(continue_msg)
                 print(continue_msg, flush=True)
                 await asyncio.sleep(5)  # Brief pause before continuing
+        
+        # Step 7: Update booking status and create evaluation after interview completes
+        logger.info("Step 7: Finalizing interview...")
+        print("Step 7: Finalizing interview...", flush=True)
+        
+        # Update booking status to completed if not already done
+        if booking_token:
+            try:
+                from app.services.booking_service import BookingService  # type: ignore
+                booking_service = BookingService(config)
+                booking_service.update_booking_status(booking_token, "completed")
+                logger.info(f"✅ Updated booking status to 'completed'")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to update booking status: {e}")
+        
+        # Create evaluation
+        logger.info("Step 7b: Creating interview evaluation...")
+        print("Step 7b: Creating interview evaluation...", flush=True)
+        try:
+            if booking_token:
+                from app.services.evaluation_service import EvaluationService  # type: ignore
+                from app.services.transcript_storage_service import TranscriptStorageService  # type: ignore
+                
+                evaluation_service = EvaluationService(config)
+                transcript_service = TranscriptStorageService(config)
+                
+                # Get transcript
+                transcript = transcript_service.get_transcript(booking_token)
+                
+                # Calculate duration
+                duration_minutes = None
+                if interview_start_time:
+                    duration_minutes = int((get_now_ist() - interview_start_time).total_seconds() / 60)
+                
+                # Create evaluation
+                evaluation_id = evaluation_service.calculate_evaluation_from_transcript(
+                    booking_token=booking_token,
+                    room_name=room_name,
+                    transcript=transcript,
+                )
+                
+                if evaluation_id:
+                    logger.info(f"✅ Evaluation created: {evaluation_id}")
+                    print(f"✅ Evaluation created: {evaluation_id}", flush=True)
+                else:
+                    logger.warning("⚠️  Failed to create evaluation")
+            else:
+                logger.warning("⚠️  No booking token available, skipping evaluation creation")
+        except Exception as e:
+            logger.warning(f"⚠️  Error creating evaluation: {e}", exc_info=True)
+            print(f"⚠️  Error creating evaluation: {e}", flush=True)
         
         logger.info("=" * 60)
         logger.info("[OK] Entrypoint Finished Successfully")
@@ -609,7 +1008,13 @@ async def _fetch_candidate_profile(room: rtc.Room, config: Config) -> Optional[d
     return None
 
 
-def _setup_session_event_handlers(session: agents.AgentSession, logger) -> None:
+def _setup_session_event_handlers(
+    session: agents.AgentSession,
+    logger,
+    booking_token: str = None,
+    room_name: str = None,
+    transcript_storage = None
+) -> None:
     """
     Setup event handlers on AgentSession to track user speech and agent replies.
     
@@ -660,6 +1065,26 @@ def _setup_session_event_handlers(session: agents.AgentSession, logger) -> None:
             status = "FINAL" if is_final else "INTERIM"
             logger.info(f"📝 [STT] Transcript ({status}): '{transcript}'")
             print(f"📝 [STT] Transcript ({status}): '{transcript}'")
+            
+            # Save user transcript to database if final
+            if is_final and transcript and transcript_storage and booking_token:
+                try:
+                    from datetime import datetime
+                    # Get current max index to ensure proper ordering
+                    existing_transcripts = transcript_storage.get_transcript(booking_token)
+                    next_index = max([t.get('index', 0) for t in existing_transcripts], default=-1) + 1
+                    
+                    transcript_storage.save_transcript_message(
+                        booking_token=booking_token,
+                        room_name=room_name,
+                        role="user",
+                        content=transcript,
+                        message_index=next_index,
+                        timestamp=datetime.utcnow(),
+                    )
+                    logger.debug(f"✅ Saved user transcript to database (index: {next_index})")
+                except Exception as e:
+                    logger.warning(f"Failed to save user transcript: {e}")
             
             if is_final:
                 logger.info("[OK] [STT] Final transcript received - will trigger LLM")

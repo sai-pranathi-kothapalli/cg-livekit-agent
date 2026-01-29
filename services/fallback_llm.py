@@ -1,7 +1,7 @@
 """
 Fallback LLM Wrapper
 
-Provides fallback LLM service that automatically switches to Gemini
+Provides fallback LLM service that automatically switches to Grok (or Gemini)
 when the primary LLM service fails.
 """
 
@@ -36,7 +36,7 @@ class FallbackLLM:
         
         Args:
             primary_llm: Primary LLM service (self-hosted)
-            fallback_llm: Fallback LLM service (Gemini, optional)
+            fallback_llm: Fallback LLM service (Grok/Gemini, optional)
             max_primary_failures: Max failures before switching to fallback
         """
         self._primary_llm = primary_llm
@@ -45,10 +45,11 @@ class FallbackLLM:
         self._primary_failures = 0
         self._using_fallback = False
         
+        fallback_name = type(fallback_llm).__name__ if fallback_llm else 'disabled'
         logger.info(
             f"✅ FallbackLLM initialized: "
             f"primary={type(primary_llm).__name__}, "
-            f"fallback={'Gemini' if fallback_llm else 'disabled'}"
+            f"fallback={fallback_name}"
         )
     
     def __getattr__(self, name: str):
@@ -129,7 +130,8 @@ class FallbackLLMChat:
                 )
                 
                 if self._wrapper._primary_failures >= self._wrapper._max_primary_failures:
-                    logger.warning("🔄 Switching to Gemini fallback LLM")
+                    fallback_name = type(self._fallback_llm).__name__ if self._fallback_llm else "fallback"
+                    logger.warning(f"🔄 Switching to {fallback_name} fallback LLM")
                     self._wrapper._using_fallback = True
                     self._using_fallback = True
                     

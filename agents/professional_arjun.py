@@ -430,7 +430,7 @@ Farming family → Could ask crops OR seasons OR challenges - whatever seems int
 - Follow prompt like rigid script
 - Sound like chatbot
 
-**Goal:** Natural, professional 30-minute interview that feels like real human conversation.
+**Goal:** Natural, professional {duration_minutes}-minute interview that feels like real human conversation.
 
 **Remember:** You're a human interviewer, not a robot. Guidelines help you, but judgment and naturalness matter most.
 
@@ -546,7 +546,8 @@ CRITICAL RULES:
         self, 
         candidate_profile: Optional[Dict[str, Any]] = None, 
         job_description: Optional[Dict[str, Any]] = None,
-        base_instructions: Optional[str] = None
+        base_instructions: Optional[str] = None,
+        duration_minutes: int = 30
     ) -> None:
         """
         Initialize Professional Arjun agent.
@@ -555,7 +556,9 @@ CRITICAL RULES:
             candidate_profile: Optional structured dictionary of candidate application data
             job_description: Optional job description dict
             base_instructions: Optional override for base system instructions
+            duration_minutes: Interview duration in minutes (default 30). Agent adapts behavior based on this.
         """
+        self.duration_minutes = duration_minutes
         instructions = self._build_instructions(candidate_profile, job_description, base_instructions)
         
         super().__init__(
@@ -567,7 +570,8 @@ CRITICAL RULES:
             f"ProfessionalArjun agent initialized "
             f"(profile_context={'yes' if candidate_profile else 'no'}, "
             f"jd_context={'yes' if job_description else 'no'}, "
-            f"dynamic_prompt={'yes' if base_instructions else 'no'})"
+            f"dynamic_prompt={'yes' if base_instructions else 'no'}, "
+            f"duration={duration_minutes} minutes)"
         )
     
     def on_error(self, error: Exception) -> None:
@@ -613,6 +617,154 @@ CRITICAL RULES:
         # Don't re-raise - let the session continue
         # The error is logged but doesn't stop the interview
         logger.warning("🔄 Continuing session despite error - interview will continue")
+    
+    def _adapt_instructions_for_duration(self, instructions: str, duration_minutes: int) -> str:
+        """
+        Adapt agent instructions based on interview duration.
+        Adjusts time tracking, phase timing, and question count guidance.
+        """
+        # Calculate proportional timings
+        intro_percent = 0.10  # 10% for intro
+        main_percent = 0.85   # 85% for main interview
+        closing_percent = 0.05  # 5% for closing
+        
+        intro_minutes = max(0.5, int(duration_minutes * intro_percent))
+        main_minutes = int(duration_minutes * main_percent)
+        closing_minutes = max(0.5, int(duration_minutes * closing_percent))
+        
+        # Calculate time tracking phases (proportional)
+        phase1_end = int(duration_minutes * 0.33)  # First third: Background
+        phase2_end = int(duration_minutes * 0.66)  # Second third: Career/banking
+        phase3_end = int(duration_minutes * 0.90)  # Last 10%: Job readiness
+        
+        # Estimate question count based on duration
+        # Roughly 1 question per 2 minutes for main interview
+        estimated_questions = max(2, int(main_minutes / 2))
+        
+        # Replace duration-specific content in instructions
+        adapted = instructions
+        
+        # Replace title with actual duration
+        adapted = adapted.replace(
+            "## RRB/IBPS Officer Scale-I Interview (30 Minutes)",
+            f"## RRB/IBPS Officer Scale-I Interview ({duration_minutes} Minutes)"
+        )
+        
+        # Replace time tracking section
+        import re
+        # Match the entire Rule 7 section including the time ranges and "Never mention" line
+        time_tracking_pattern = r"### Rule 7: TIME TRACKING \(Internal Only\)\n- 0-10 min:.*?\n- 27-30 min: Closing\n\n\*\*Never mention:\*\*"
+        new_time_tracking = f"""### Rule 7: TIME TRACKING (Internal Only)
+- 0-{phase1_end} min: Background, family, education
+- {phase1_end}-{phase2_end} min: Career choice, banking knowledge
+- {phase2_end}-{phase3_end} min: Job readiness, strengths
+- {phase3_end}-{duration_minutes} min: Closing
+
+**Never mention:**"""
+        
+        adapted = re.sub(
+            time_tracking_pattern,
+            new_time_tracking,
+            adapted,
+            flags=re.DOTALL
+        )
+        
+        # Replace phase timing (escape parentheses in regex)
+        phase1_pattern = r"### PHASE 1: WELCOME \(3-4 min\)"
+        new_phase1 = f"### PHASE 1: WELCOME ({intro_minutes} min)"
+        adapted = re.sub(phase1_pattern, new_phase1, adapted)
+        
+        phase2_pattern = r"### PHASE 2: MAIN INTERVIEW \(22-23 min\)"
+        new_phase2 = f"### PHASE 2: MAIN INTERVIEW ({main_minutes} min)"
+        adapted = re.sub(phase2_pattern, new_phase2, adapted)
+        
+        phase3_pattern = r"### PHASE 3: CLOSING \(3-4 min\)"
+        new_phase3 = f"### PHASE 3: CLOSING ({closing_minutes} min)"
+        adapted = re.sub(phase3_pattern, new_phase3, adapted)
+        
+        # Replace question count guidance
+        question_guidance_pattern = r"\*\*Use as resource pool - pick what fits naturally\. You'll only ask 10-15 in 30 minutes\.\*\*"
+        new_question_guidance = f"**Use as resource pool - pick what fits naturally. You'll only ask approximately {estimated_questions} questions in this {duration_minutes}-minute interview.**"
+        adapted = re.sub(question_guidance_pattern, new_question_guidance, adapted)
+        
+        # Add duration-specific guidance based on length
+        duration_guidance = ""
+        if duration_minutes <= 5:
+            duration_guidance = """
+## DURATION-SPECIFIC GUIDANCE (5 Minutes)
+
+**Focus Areas:**
+- Brief intro (30 seconds): Name + location
+- Main interview (4 minutes): 2-3 key questions
+  - 1 background question (family/education)
+  - 1-2 banking/GK questions
+- Closing (30 seconds): Brief thank you
+
+**Strategy:** Be very focused. Ask only the most essential questions. Skip detailed follow-ups.
+"""
+        elif duration_minutes <= 10:
+            duration_guidance = """
+## DURATION-SPECIFIC GUIDANCE (10 Minutes)
+
+**Focus Areas:**
+- Intro (1 minute): Name + brief introduction request
+- Main interview (8 minutes): 4-6 questions
+  - 2 background questions (family, education)
+  - 2-3 banking/GK questions
+  - 1 job readiness question
+- Closing (1 minute): Thank you + brief feedback
+
+**Strategy:** Cover key areas efficiently. Ask direct questions. Limit follow-ups to 1 per topic.
+"""
+        elif duration_minutes <= 15:
+            duration_guidance = """
+## DURATION-SPECIFIC GUIDANCE (15 Minutes)
+
+**Focus Areas:**
+- Intro (1-2 minutes): Name + introduction
+- Main interview (12-13 minutes): 6-8 questions
+  - 2-3 background questions
+  - 3-4 banking/GK questions
+  - 1-2 job readiness questions
+- Closing (1 minute): Thank you + feedback
+
+**Strategy:** Balanced coverage. Allow brief follow-ups. Cover most important areas.
+"""
+        elif duration_minutes >= 45:
+            duration_guidance = """
+## DURATION-SPECIFIC GUIDANCE (45+ Minutes)
+
+**Focus Areas:**
+- Intro (4-5 minutes): Comprehensive introduction
+- Main interview (37-38 minutes): 15-20 questions
+  - Deep dive into all areas
+  - Multiple follow-up questions
+  - Explore interesting threads in detail
+- Closing (3-4 minutes): Comprehensive feedback
+
+**Strategy:** Thorough assessment. Explore topics in depth. Multiple follow-ups allowed.
+"""
+        else:
+            # 30 minutes (default) - no special guidance needed
+            duration_guidance = ""
+        
+        # Insert duration guidance after the interview structure section
+        if duration_guidance:
+            adapted = adapted.replace(
+                "---\n\n## QUESTION BANK (149 Questions)",
+                f"---\n{duration_guidance}\n---\n\n## QUESTION BANK (149 Questions)"
+            )
+        
+        # Update goal statement (handle both "30-minute" and "30 minute" variations)
+        goal_pattern1 = r"\*\*Goal:\*\* Natural, professional 30-minute interview that feels like real human conversation\."
+        goal_pattern2 = r"\*\*Goal:\*\* Natural, professional 30 minute interview that feels like real human conversation\."
+        new_goal = f"**Goal:** Natural, professional {duration_minutes}-minute interview that feels like real human conversation."
+        adapted = re.sub(goal_pattern1, new_goal, adapted)
+        adapted = re.sub(goal_pattern2, new_goal, adapted)
+        
+        logger.info(f"✅ Adapted instructions for {duration_minutes}-minute interview: Intro={intro_minutes}min, Main={main_minutes}min, Closing={closing_minutes}min, ~{estimated_questions} questions")
+        
+        return adapted
     
     def _estimate_tokens(self, text: str) -> int:
         """
@@ -755,7 +907,10 @@ CRITICAL RULES:
         """
         # Use provided base instructions or fallback to hardcoded constant
         # THIS IS NEVER TRUNCATED - it's the core Arjun context
-        core_instructions = base_instructions if base_instructions else self.BASE_INSTRUCTIONS
+        base_instructions_text = base_instructions if base_instructions else self.BASE_INSTRUCTIONS
+        
+        # Adapt instructions based on interview duration
+        core_instructions = self._adapt_instructions_for_duration(base_instructions_text, self.duration_minutes)
         core_tokens = self._estimate_tokens(core_instructions)
         
         # Reserve ~600 tokens for conversation, so max 3500 tokens total

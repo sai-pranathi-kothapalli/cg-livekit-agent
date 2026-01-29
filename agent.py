@@ -174,6 +174,29 @@ async def job_request_handler(req: JobRequest) -> None:
         print(f"[WARN]  Error in post-accept logging: {e}")
 
 if __name__ == "__main__":
+    # Monkey-patch IPC log listener to avoid crash on incompatible pickle
+    # (e.g. TypeError: __init__() missing 2 required keyword-only arguments: 'request' and 'response')
+    try:
+        import pickle
+        from livekit.agents.utils.aio import duplex_unix as _duplex_unix
+        from livekit.agents.ipc import log_queue
+
+        def _patched_monitor(self):
+            while True:
+                try:
+                    data = self._duplex.recv_bytes()
+                except _duplex_unix.DuplexClosed:
+                    break
+                try:
+                    record = pickle.loads(data)
+                    self.handle(record)
+                except (TypeError, AttributeError):
+                    continue
+
+        log_queue.LogQueueListener._monitor = _patched_monitor
+    except Exception:
+        pass
+
     # CRITICAL: Don't configure logging here - LiveKit will do it
     # Just ensure stdout is unbuffered so print statements appear immediately
     import sys
