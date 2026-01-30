@@ -9,8 +9,11 @@ from pathlib import Path
 from typing import Optional, Callable, AsyncContextManager
 from datetime import datetime
 
-# Add backend to path for imports
-backend_path = Path(__file__).parent.parent.parent / "backend"
+# Add backend to path for imports (same as agent.py / entrypoint.py)
+_root = Path(__file__).parent.parent.parent
+backend_path = _root / "Livekit-Backend-agent-backend"
+if not backend_path.exists():
+    backend_path = _root / "backend"
 if backend_path.exists() and str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 

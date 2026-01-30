@@ -388,7 +388,7 @@ async def entrypoint(ctx: JobContext) -> None:
         print(f"📊 Room state before session.start: connected={ctx.room.isconnected()}, participants={len(ctx.room.remote_participants)}", flush=True)
         
         # Add event handlers to track user speech and agent replies
-        _setup_session_event_handlers(session, logger, booking_token, room_name, transcript_storage)
+        _setup_session_event_handlers(session, logger, booking_token, room_name, transcript_storage, ctx)
         
         # Start session - this will handle all user speech automatically
         logger.info("[PROD] Starting AgentSession (will handle user speech automatically)...")
@@ -988,12 +988,14 @@ def _setup_session_event_handlers(
     logger,
     booking_token: str = None,
     room_name: str = None,
-    transcript_storage = None
+    transcript_storage = None,
+    ctx: Optional[JobContext] = None,
 ) -> None:
     """
     Setup event handlers on AgentSession to track user speech and agent replies.
     
     This helps debug the STT → LLM → TTS pipeline.
+    ctx is used to publish user transcripts to the frontend via data channel.
     """
     @session.on("user_state_changed")
     def on_user_state_changed(event):
@@ -1061,6 +1063,24 @@ def _setup_session_event_handlers(
                 except Exception as e:
                     logger.warning(f"Failed to save user transcript: {e}")
             
+            # Send final user transcript to frontend via data channel so it shows in transcript UI
+            if is_final and transcript and ctx and ctx.room.isconnected():
+                try:
+                    loop = asyncio.get_running_loop()
+                    async def _publish_user_transcript():
+                        try:
+                            payload = json.dumps({"type": "userTranscript", "message": transcript}).encode("utf-8")
+                            await ctx.room.local_participant.publish_data(
+                                payload, topic="lk-chat", reliable=True
+                            )
+                            logger.debug("Sent user transcript to frontend via data channel")
+                        except Exception as e:
+                            logger.warning(f"Failed to send user transcript to frontend: {e}")
+                    loop.create_task(_publish_user_transcript())
+                except RuntimeError:
+                    logger.debug("No running event loop for user transcript publish (skipping data channel)")
+                except Exception as e:
+                    logger.warning(f"Could not schedule user transcript send: {e}")
             if is_final:
                 logger.info("[OK] [STT] Final transcript received - will trigger LLM")
                 print("[OK] [STT] Final transcript received - will trigger LLM")

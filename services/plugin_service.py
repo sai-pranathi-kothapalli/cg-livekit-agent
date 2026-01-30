@@ -193,10 +193,11 @@ class PluginService:
             original_transcript_service = TranscriptForwardingService(room)
             quiet_transcript_service = QuietTranscriptWrapper(original_transcript_service)
             
-            # Wrap with storage to save transcripts to database
+            # Wrap with storage to save transcripts to database (pass booking_token so MongoDB has correct key)
             transcript_service = TranscriptStorageWrapper(
                 original_transcript_service=quiet_transcript_service,
                 room_name=room.name,
+                booking_token=booking_token,
             )
             
             original_chat = llm_plugin.chat
