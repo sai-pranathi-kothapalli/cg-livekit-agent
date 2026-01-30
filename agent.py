@@ -11,25 +11,31 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Add backend to Python path FIRST so we can import from app
-backend_path = Path(__file__).parent.parent / "backend"
+# Add backend to Python path FIRST so we can import from app (try both folder names)
+_root = Path(__file__).parent.parent
+backend_path = _root / "Livekit-Backend-agent-backend"
+if not backend_path.exists():
+    backend_path = _root / "backend"
 if backend_path.exists() and str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
-
-# Try loading from different possible locations
-# 1. Root .env.local
-root_env_path = Path(__file__).parent.parent / ".env.local"
-# 2. Backend .env
-backend_env_path = Path(__file__).parent.parent / "backend" / ".env"
-
-if root_env_path.exists():
-    print(f"[INFO] Loading environment from {root_env_path}")
-    load_dotenv(root_env_path, override=True)
-elif backend_env_path.exists():
-    print(f"[INFO] Loading environment from {backend_env_path}")
-    load_dotenv(backend_env_path, override=True)
+    print(f"[INFO] Backend path added: {backend_path}", flush=True)
 else:
-    print("[WARNING] No environment file found in root or backend directory!")
+    print(f"[WARNING] Backend not found at {_root / 'Livekit-Backend-agent-backend'} or {_root / 'backend'}", flush=True)
+
+# Try loading from different possible locations (backend .env has GEMINI_API_KEY etc.)
+root_env_path = _root / ".env.local"
+backend_env_path = _root / "Livekit-Backend-agent-backend" / ".env"
+if not backend_env_path.exists():
+    backend_env_path = _root / "backend" / ".env"
+
+if backend_env_path.exists():
+    print(f"[INFO] Loading environment from {backend_env_path}", flush=True)
+    load_dotenv(backend_env_path, override=True)
+elif root_env_path.exists():
+    print(f"[INFO] Loading environment from {root_env_path}", flush=True)
+    load_dotenv(root_env_path, override=True)
+else:
+    print("[WARNING] No .env found in Livekit-Backend-agent-backend or .env.local - GEMINI_API_KEY may be missing!", flush=True)
 
 # NOW import other modules (after backend path is set and environment is loaded)
 from agents.entrypoint import entrypoint

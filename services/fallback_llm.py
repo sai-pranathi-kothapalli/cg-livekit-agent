@@ -86,8 +86,10 @@ class FallbackLLMChat:
     async def __aenter__(self):
         # Start with the appropriate LLM based on wrapper state
         if self._using_fallback and self._fallback_llm:
+            logger.info("🔵 [LLM] Using FALLBACK LLM (Qwen) for this turn")
             self._active_chat = self._fallback_llm.chat(*self._args, **self._kwargs)
         else:
+            logger.info("🔵 [LLM] Using PRIMARY LLM (Gemini) for this turn")
             self._active_chat = self._primary_llm.chat(*self._args, **self._kwargs)
         
         return await self._active_chat.__aenter__()

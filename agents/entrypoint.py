@@ -18,10 +18,13 @@ from livekit import agents, rtc
 from livekit.agents import JobContext, AgentSession, room_io
 from livekit.plugins import noise_cancellation
 
-# Add backend to Python path so we can import from app
+# Add backend to Python path so we can import from app (try both folder names)
 import sys
 from pathlib import Path
-backend_path = Path(__file__).parent.parent.parent / "backend"
+_root = Path(__file__).parent.parent.parent
+backend_path = _root / "Livekit-Backend-agent-backend"
+if not backend_path.exists():
+    backend_path = _root / "backend"
 if backend_path.exists() and str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
@@ -207,32 +210,6 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.warning(warning_msg)
             print(warning_msg, flush=True)
         
-        # Extract candidate info from booking for orchestrator
-        candidate_name = None
-        candidate_role = None
-        if booking_token:
-            try:
-                from app.services.booking_service import BookingService  # type: ignore
-                booking_service = BookingService(config)
-                booking = booking_service.get_booking(booking_token)
-                
-                if booking:
-                    # Try to get candidate name from booking or application
-                    # Check if booking has application_form_id to fetch application data
-                    application_form_id = booking.get('application_form_id')
-                    if application_form_id:
-                        # TODO: Fetch application data if ApplicationFormService is available
-                        # For now, we'll use booking metadata if available
-                        pass
-                    
-                    # Try to get name from booking metadata or user info
-                    # candidate_name = booking.get('candidate_name') or booking.get('name')
-                    # candidate_role = booking.get('candidate_role') or booking.get('post') or booking.get('position')
-                    
-                    logger.info(f"[DEBUG] Candidate info: name={candidate_name or 'not set'}, role={candidate_role or 'not set'}")
-            except Exception as e:
-                logger.warning(f"Could not extract candidate info: {e}")
-        
         # Step 4: Initialize plugins
         logger.info("Step 4: Initializing Plugins (STT, LLM, TTS)...")
         print("Step 4: Initializing Plugins (STT, LLM, TTS)...", flush=True)
@@ -240,9 +217,7 @@ async def entrypoint(ctx: JobContext) -> None:
             plugin_service = PluginService(config)
             plugins = await plugin_service.initialize_plugins(
                 ctx.room,
-                booking_token=booking_token,
-                candidate_name=candidate_name,
-                candidate_role=candidate_role
+                booking_token=booking_token
             )
             
             # CRITICAL: Validate TTS plugin is actually initialized

@@ -16,34 +16,13 @@ from livekit.plugins import (  # type: ignore
     silero,
 )
 
-# Optional cloud service imports
-try:
-    from livekit.plugins import deepgram  # type: ignore
-    DEEPGRAM_AVAILABLE = True
-except ImportError:
-    DEEPGRAM_AVAILABLE = False
-    deepgram = None  # type: ignore
-
-try:
-    from livekit.plugins import elevenlabs  # type: ignore
-    ELEVENLABS_AVAILABLE = True
-except ImportError:
-    ELEVENLABS_AVAILABLE = False
-    elevenlabs = None  # type: ignore
-
+# Google Gemini (primary LLM)
 try:
     from livekit.plugins import google  # type: ignore (for Gemini)
     GOOGLE_AVAILABLE = True
 except ImportError:
     GOOGLE_AVAILABLE = False
     google = None  # type: ignore
-
-try:
-    from services.grok_llm import GrokLLM  # type: ignore
-    GROK_AVAILABLE = True
-except ImportError:
-    GROK_AVAILABLE = False
-    GrokLLM = None  # type: ignore
 
 from app.config import Config  # type: ignore
 from app.utils.logger import get_logger  # type: ignore
@@ -85,18 +64,14 @@ class PluginService:
     async def initialize_plugins(
         self, 
         room: rtc.Room,
-        booking_token: Optional[str] = None,
-        candidate_name: Optional[str] = None,
-        candidate_role: Optional[str] = None
+        booking_token: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Initialize all required plugins for the agent session.
         
         Args:
             room: LiveKit room instance (for transcript forwarding)
-            booking_token: Booking token (for orchestrator session_id)
-            candidate_name: Candidate name (for orchestrator context)
-            candidate_role: Candidate role (for orchestrator context)
+            booking_token: Booking token (for session identification)
             
         Returns:
             Dictionary containing initialized plugins:
@@ -116,7 +91,7 @@ class PluginService:
             stt_plugin = self._initialize_stt()
             
             # Initialize LLM plugin with transcript forwarding
-            llm_plugin = self._initialize_llm(room, booking_token, candidate_name, candidate_role)
+            llm_plugin = self._initialize_llm(room, booking_token)
             
             # Initialize TTS plugin
             tts_plugin = self._initialize_tts()
@@ -139,247 +114,72 @@ class PluginService:
     
     def _initialize_stt(self):
         """
-        Initialize STT plugin with optional cloud fallback.
-        Supports enable/disable flags for both self-hosted and cloud services.
+        Initialize STT plugin (self-hosted only).
         
         Returns:
-            Configured STT plugin (with fallback if enabled)
+            Configured STT plugin
         """
-        logger.info("[DEBUG] STT CONFIGURATION:")
-        
-        primary_stt = None
-        fallback_stt = None
-        
-        # Initialize self-hosted STT if enabled
-        if self.config.openai.stt_enabled:
-            logger.info(f"   Self-hosted STT: ENABLED")
-            logger.info(f"   Base URL: {self.config.openai.stt_base_url}")
-            logger.info(f"   Model: {self.config.openai.stt_model}")
-            try:
-                # Use a higher timeout for self-hosted STT
-                primary_stt = openai.STT(
-                    base_url=f"{self.config.openai.stt_base_url}/stt/v1",
-                    model=self.config.openai.stt_model,
-                )
-                logger.info("   [OK] Self-hosted STT initialized")
-            except Exception as e:
-                logger.error(f"   [ERR] Failed to initialize self-hosted STT: {e}", exc_info=True)
-                if not self.config.elevenlabs_stt.enabled:
-                    raise  # No fallback available, must fail
-        else:
-            logger.warning("   [WARN]  Self-hosted STT: DISABLED (via SELF_HOSTED_STT_ENABLED=false)")
-        
-        # Initialize cloud STT (Deepgram primary, ElevenLabs fallback)
-        logger.info(f"   [DEBUG] Debug: deepgram_stt.enabled={self.config.deepgram_stt.enabled}")
-        logger.info(f"   [DEBUG] Debug: DEEPGRAM_AVAILABLE={DEEPGRAM_AVAILABLE}")
-        logger.info(f"   [DEBUG] Debug: deepgram api_key exists={bool(self.config.deepgram_stt.api_key)}")
-        
-        # Try Deepgram first
-        if self.config.deepgram_stt.enabled and DEEPGRAM_AVAILABLE:
-            if self.config.deepgram_stt.api_key:
-                try:
-                    fallback_stt = deepgram.STT(api_key=self.config.deepgram_stt.api_key)
-                    logger.info("   [OK] Cloud STT (Deepgram) initialized")
-                except Exception as e:
-                    logger.warning(f"   [WARN]  Failed to initialize Deepgram STT: {e}")
-        elif self.config.deepgram_stt.enabled and not DEEPGRAM_AVAILABLE:
-            logger.warning("   [WARN]  Deepgram STT enabled but plugin not installed")
-            logger.warning("   Install with: pip install livekit-plugins-deepgram")
-        
-        # Try ElevenLabs if Deepgram not available
-        if not fallback_stt and self.config.elevenlabs_stt.enabled and ELEVENLABS_AVAILABLE:
-            if self.config.elevenlabs_stt.api_key:
-                try:
-                    fallback_stt = elevenlabs.STT(api_key=self.config.elevenlabs_stt.api_key)
-                    logger.info("   [OK] Cloud fallback STT (ElevenLabs) initialized")
-                except Exception as e:
-                    logger.warning(f"   [WARN]  Failed to initialize ElevenLabs STT: {e}")
-        
-        # Determine final STT configuration
-        if primary_stt and fallback_stt:
-            # Both enabled: use fallback wrapper
-            from services.fallback_stt import FallbackSTT
-            stt_plugin = FallbackSTT(
-                primary_stt=primary_stt,
-                fallback_stt=fallback_stt,
-                max_primary_failures=3
-            )
-            logger.info("   [OK] STT with cloud fallback enabled (activates after 3 failures)")
-        elif primary_stt:
-            # Only self-hosted
-            stt_plugin = primary_stt
-            logger.warning("   [WARN]  Cloud fallback disabled - session will close on STT failures")
-        elif fallback_stt:
-            # Only cloud (self-hosted disabled)
-            stt_plugin = fallback_stt
-            logger.info("   [OK] Using cloud STT only (self-hosted disabled)")
-        else:
-            raise ConfigurationError("No STT service configured! Enable at least one STT service.")
-        
+        logger.info("[DEBUG] STT CONFIGURATION: Self-hosted only")
+        if not self.config.openai.stt_enabled:
+            raise ConfigurationError("Self-hosted STT is required. Set SELF_HOSTED_STT_ENABLED=true.")
+        logger.info(f"   Base URL: {self.config.openai.stt_base_url}")
+        logger.info(f"   Model: {self.config.openai.stt_model}")
+        stt_plugin = openai.STT(
+            base_url=f"{self.config.openai.stt_base_url}/stt/v1",
+            model=self.config.openai.stt_model,
+        )
+        logger.info("   [OK] Self-hosted STT initialized")
         return stt_plugin
     
-    def _initialize_llm(self, room: rtc.Room, booking_token: Optional[str] = None, candidate_name: Optional[str] = None, candidate_role: Optional[str] = None):
+    def _initialize_llm(self, room: rtc.Room, booking_token: Optional[str] = None):
         """
-        Initialize LLM plugin with optional cloud fallback.
-        If orchestrator is enabled, use it as primary LLM (replaces all other LLMs).
-        Otherwise: Self-hosted (primary) -> Gemini (first fallback) -> Grok (fallback of Gemini).
+        Initialize LLM plugin: Gemini (primary) -> self-hosted Qwen (fallback).
         
         Args:
             room: LiveKit room instance
-            booking_token: Booking token (for session_id)
-            candidate_name: Candidate name (for orchestrator context)
-            candidate_role: Candidate role (for orchestrator context)
+            booking_token: Booking token (for session identification)
             
         Returns:
-            Configured LLM plugin (with fallback if enabled)
+            Configured LLM plugin
         """
-        # Check if orchestrator is enabled - if so, use it exclusively
-        if self.config.orchestrator_llm.enabled:
-            logger.info("[DEBUG] LLM CONFIGURATION: Using Orchestrator (replaces all other LLMs)")
-            try:
-                from services.orchestrator_llm import OrchestratorLLM
-                
-                # Use room name or booking token as session_id
-                session_id = booking_token or room.name
-                
-                orchestrator_llm = OrchestratorLLM(
-                    base_url=self.config.orchestrator_llm.base_url,
-                    session_id=session_id,
-                    candidate_name=candidate_name,
-                    candidate_role=candidate_role,
-                )
-                logger.info(f"   [OK] Orchestrator LLM initialized: session_id={session_id}")
-                logger.info(f"   [OK] Candidate context: name={candidate_name or 'not set'}, role={candidate_role or 'not set'}")
-                
-                # Orchestrator handles history internally, so we don't need history wrapper
-                # But we still wrap for transcript forwarding and timing
-                if hasattr(orchestrator_llm, 'chat'):
-                    from app.services.transcript_service import TranscriptForwardingService  # type: ignore
-                    from services.timing_llm_wrapper import TimingLLMWrapper
-                    from services.quiet_transcript_wrapper import QuietTranscriptWrapper
-                    from services.transcript_storage_wrapper import TranscriptStorageWrapper
-                    
-                    # Create transcript service and wrap it to reduce spam
-                    original_transcript_service = TranscriptForwardingService(room)
-                    quiet_transcript_service = QuietTranscriptWrapper(original_transcript_service)
-                    
-                    # Wrap with storage to save transcripts to database
-                    transcript_service = TranscriptStorageWrapper(
-                        original_transcript_service=quiet_transcript_service,
-                        room_name=room.name,
-                    )
-                    
-                    original_chat = orchestrator_llm.chat
-                    
-                    # Wrap with timing (orchestrator handles history, so no history wrapper needed)
-                    timing_wrapper = TimingLLMWrapper(original_chat)
-                    
-                    orchestrator_llm.chat = timing_wrapper
-                    logger.info("   [OK] Orchestrator LLM wrapped for transcript forwarding and timing")
-                
-                return orchestrator_llm
-            except Exception as e:
-                logger.error(f"   [ERR] Failed to initialize Orchestrator LLM: {e}", exc_info=True)
-                raise
+        logger.info("[DEBUG] LLM CONFIGURATION: Gemini (primary) -> Qwen (fallback)")
         
-        # Fallback to traditional LLM chain if orchestrator is disabled
-        logger.info("[DEBUG] LLM CONFIGURATION: Self-hosted -> Gemini -> Grok")
+        # Primary: Google Gemini
+        if not GOOGLE_AVAILABLE:
+            raise ConfigurationError("Gemini plugin required. Install with: pip install livekit-plugins-google")
+        primary_llm = google.LLM(
+            model=self.config.gemini_llm.model,
+            api_key=self.config.gemini_llm.api_key,
+        )
+        has_key = bool(self.config.gemini_llm.api_key and self.config.gemini_llm.api_key.strip())
+        logger.info(f"   [OK] Primary LLM (Gemini {self.config.gemini_llm.model}) initialized, API key set={has_key}")
+        if not has_key:
+            logger.warning("   [WARN] GEMINI_API_KEY is missing or empty - Gemini will fail at runtime!")
         
-        primary_llm = None
+        # Fallback: self-hosted Qwen
         fallback_llm = None
-        
-        # Initialize self-hosted LLM if enabled
         if self.config.openai.llm_enabled:
-            logger.info(f"   Self-hosted LLM: ENABLED")
-            logger.info(f"   Base URL: {self.config.openai.llm_base_url}")
-            logger.info(f"   Model: {self.config.openai.llm_model}")
             try:
-                primary_llm = openai.LLM(
+                fallback_llm = openai.LLM(
                     base_url=f"{self.config.openai.llm_base_url}/llm/v1",
                     model=self.config.openai.llm_model,
                     api_key=self.config.openai.api_key,
                 )
-                logger.info("   [OK] Self-hosted LLM initialized")
+                logger.info(f"   [OK] Fallback LLM (Qwen {self.config.openai.llm_model}) initialized")
             except Exception as e:
-                logger.error(f"   [ERR] Failed to initialize self-hosted LLM: {e}", exc_info=True)
-                if not (self.config.gemini_llm.enabled or self.config.grok_llm.enabled):
-                    raise  # No fallback available, must fail
-        else:
-            logger.warning("   [WARN]  Self-hosted LLM: DISABLED (via SELF_HOSTED_LLM_ENABLED=false)")
+                logger.warning(f"   [WARN]  Fallback Qwen LLM failed: {e}")
         
-        # Cloud fallback order: Gemini (first fallback), then Grok (fallback of Gemini)
-        # 1. Initialize Gemini if enabled (first fallback after self-hosted)
-        gemini_llm = None
-        if self.config.gemini_llm.enabled and GOOGLE_AVAILABLE:
-            if self.config.gemini_llm.api_key:
-                try:
-                    gemini_llm = google.LLM(
-                        model=self.config.gemini_llm.model,
-                        api_key=self.config.gemini_llm.api_key,
-                    )
-                    logger.info(f"   [OK] Cloud fallback LLM (Gemini {self.config.gemini_llm.model}) initialized")
-                except Exception as e:
-                    logger.warning(f"   [WARN]  Failed to initialize Gemini LLM: {e}")
-            else:
-                logger.warning("   [WARN]  Gemini LLM enabled but API key not provided")
-        elif self.config.gemini_llm.enabled and not GOOGLE_AVAILABLE:
-            logger.warning("   [WARN]  Gemini LLM enabled but plugin not installed")
-            logger.warning("   Install with: pip install livekit-plugins-google")
-        
-        # 2. Initialize Grok if enabled (fallback of Gemini, or sole cloud fallback)
-        grok_llm = None
-        if self.config.grok_llm.enabled and GROK_AVAILABLE:
-            if self.config.grok_llm.api_key:
-                try:
-                    grok_llm = GrokLLM(
-                        model=self.config.grok_llm.model,
-                        api_key=self.config.grok_llm.api_key,
-                    )
-                    logger.info(f"   [OK] Cloud fallback LLM (Grok {self.config.grok_llm.model}) initialized")
-                except Exception as e:
-                    logger.warning(f"   [WARN]  Failed to initialize Grok LLM: {e}")
-            else:
-                logger.warning("   [WARN]  Grok LLM enabled but API key not provided")
-        elif self.config.grok_llm.enabled and not GROK_AVAILABLE:
-            logger.warning("   [WARN]  Grok LLM enabled but xai_sdk not installed")
-            logger.warning("   Install with: pip install xai-sdk")
-        
-        # 3. Build fallback chain: Gemini (first) -> Grok (second). If both available, wrap as FallbackLLM(Gemini, Grok).
-        if gemini_llm and grok_llm:
-            from services.fallback_llm import FallbackLLM
-            fallback_llm = FallbackLLM(
-                primary_llm=gemini_llm,
-                fallback_llm=grok_llm,
-                max_primary_failures=3
-            )
-            logger.info("   [OK] Cloud fallback chain: Gemini (first) -> Grok (second)")
-        elif gemini_llm:
-            fallback_llm = gemini_llm
-        elif grok_llm:
-            fallback_llm = grok_llm
-        else:
-            fallback_llm = None
-        
-        # Determine final LLM configuration
-        if primary_llm and fallback_llm:
-            # Both enabled: use fallback wrapper
+        if fallback_llm:
             from services.fallback_llm import FallbackLLM
             llm_plugin = FallbackLLM(
                 primary_llm=primary_llm,
                 fallback_llm=fallback_llm,
                 max_primary_failures=3
             )
-            logger.info("   [OK] LLM with cloud fallback enabled (activates after 3 failures)")
-        elif primary_llm:
-            # Only self-hosted
-            llm_plugin = primary_llm
-            logger.warning("   [WARN]  Cloud fallback disabled - session will close on LLM failures")
-        elif fallback_llm:
-            # Only cloud (self-hosted disabled)
-            llm_plugin = fallback_llm
-            logger.info("   [OK] Using cloud LLM only (self-hosted disabled)")
+            logger.info("   [OK] LLM: Gemini (primary) -> Qwen (fallback after 3 failures)")
         else:
-            raise ConfigurationError("No LLM service configured! Enable at least one LLM service.")
+            llm_plugin = primary_llm
+            logger.warning("   [WARN]  No LLM fallback - session will close on Gemini failures")
         
         # Wrap LLM chat for transcript forwarding and history management
         if hasattr(llm_plugin, 'chat'):
@@ -425,74 +225,23 @@ class PluginService:
     
     def _initialize_tts(self):
         """
-        Initialize TTS plugin with optional cloud fallback.
-        Supports enable/disable flags for both self-hosted and cloud services.
+        Initialize TTS plugin (self-hosted only).
         
         Returns:
-            Configured TTS plugin (with fallback if enabled)
+            Configured TTS plugin
         """
-        logger.info("[DEBUG] TTS CONFIGURATION:")
-        
-        primary_tts = None
-        fallback_tts = None
-        
-        # Initialize self-hosted TTS if enabled
-        if self.config.openai.tts_enabled:
-            logger.info(f"   Self-hosted TTS: ENABLED")
-            logger.info(f"   Base URL: {self.config.openai.tts_base_url}")
-            logger.info(f"   Model: {self.config.openai.tts_model}")
-            logger.info(f"   Voice: {self.config.openai.tts_voice}")
-            try:
-                primary_tts = openai.TTS(
-                    base_url=f"{self.config.openai.tts_base_url}/tts/v1",
-                    model=self.config.openai.tts_model,
-                    voice=self.config.openai.tts_voice,
-                    api_key=self.config.openai.api_key,
-                )
-                logger.info("   [OK] Self-hosted TTS initialized")
-            except Exception as e:
-                logger.error(f"   [ERR] Failed to initialize self-hosted TTS: {e}", exc_info=True)
-                if not self.config.elevenlabs_tts.enabled:
-                    raise  # No fallback available, must fail
-        else:
-            logger.warning("   [WARN]  Self-hosted TTS: DISABLED (via SELF_HOSTED_TTS_ENABLED=false)")
-        
-        # Initialize cloud fallback TTS (ElevenLabs)
-        if self.config.elevenlabs_tts.enabled and ELEVENLABS_AVAILABLE:
-            if self.config.elevenlabs_tts.api_key:
-                try:
-                    fallback_tts = elevenlabs.TTS(
-                        api_key=self.config.elevenlabs_tts.api_key,
-                        voice_id=self.config.elevenlabs_tts.voice_id,
-                    )
-                    logger.info(f"   [OK] Cloud fallback TTS (ElevenLabs voice {self.config.elevenlabs_tts.voice_id}) initialized")
-                except Exception as e:
-                    logger.warning(f"   [WARN]  Failed to initialize ElevenLabs TTS: {e}")
-        elif self.config.elevenlabs_tts.enabled and not ELEVENLABS_AVAILABLE:
-            logger.warning("   [WARN]  ElevenLabs TTS enabled but plugin not installed")
-            logger.warning("   Install with: pip install livekit-plugins-elevenlabs")
-        
-        # Determine final TTS configuration
-        if primary_tts and fallback_tts:
-            # Both enabled: use fallback wrapper
-            from services.fallback_tts import FallbackTTS
-            tts_plugin = FallbackTTS(
-                primary_tts=primary_tts,
-                fallback_tts=fallback_tts,
-                max_primary_failures=3
-            )
-            logger.info("   [OK] TTS with cloud fallback enabled (activates after 3 failures)")
-        elif primary_tts:
-            # Only self-hosted
-            tts_plugin = primary_tts
-            logger.warning("   [WARN]  Cloud fallback disabled - session will close on TTS failures")
-        elif fallback_tts:
-            # Only cloud (self-hosted disabled)
-            tts_plugin = fallback_tts
-            logger.info("   [OK] Using cloud TTS only (self-hosted disabled)")
-        else:
-            raise ConfigurationError("No TTS service configured! Enable at least one TTS service.")
-        
+        logger.info("[DEBUG] TTS CONFIGURATION: Self-hosted only")
+        if not self.config.openai.tts_enabled:
+            raise ConfigurationError("Self-hosted TTS is required. Set SELF_HOSTED_TTS_ENABLED=true.")
+        logger.info(f"   Base URL: {self.config.openai.tts_base_url}")
+        logger.info(f"   Model: {self.config.openai.tts_model}, Voice: {self.config.openai.tts_voice}")
+        tts_plugin = openai.TTS(
+            base_url=f"{self.config.openai.tts_base_url}/tts/v1",
+            model=self.config.openai.tts_model,
+            voice=self.config.openai.tts_voice,
+            api_key=self.config.openai.api_key,
+        )
+        logger.info("   [OK] Self-hosted TTS initialized")
         return tts_plugin
     
     def _initialize_vad(self) -> silero.VAD:

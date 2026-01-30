@@ -58,6 +58,14 @@ class TimingContextWrapper:
         self._chunk_count = 0
         self._total_chars = 0
         
+        # ✅ EXPLICIT: We are about to call the LLM (Gemini or fallback)
+        logger.info("🔵 [LLM] Entering chat context - calling Gemini (or fallback)...")
+        try:
+            import sys
+            print("🔵 [LLM] Entering chat context - calling Gemini (or fallback)...", flush=True)
+        except Exception:
+            pass
+        
         # ✅ LOG TURN START (if this is the first LLM call for this turn)
         if TimingContextWrapper._turn_start_time is None:
             log_turn_start()
@@ -68,9 +76,14 @@ class TimingContextWrapper:
         
         result = await self._cm.__aenter__()
         
-        # ✅ CHECKPOINT: Connected
+        # ✅ CHECKPOINT: Connected (LLM accepted the request)
         if self._timer:
             self._timer.checkpoint("Connected to LLM")
+        logger.info("🔵 [LLM] Chat context entered - Gemini (or fallback) connected, waiting for first chunk...")
+        try:
+            print("🔵 [LLM] Chat context entered - Gemini connected, waiting for first chunk...", flush=True)
+        except Exception:
+            pass
         
         return self
     
@@ -115,10 +128,16 @@ class TimingContextWrapper:
         try:
             chunk = await self._cm.__anext__()
             
-            # ✅ CHECKPOINT: First chunk (TTFB)
+            # ✅ CHECKPOINT: First chunk (TTFB) - Gemini has responded
             if not self._first_chunk and self._timer:
                 self._first_chunk = True
                 self._timer.checkpoint("First chunk (TTFB)")
+                logger.info("🔵 [LLM] Gemini first chunk received (TTFB) - stream started")
+                try:
+                    import sys
+                    print("🔵 [LLM] Gemini first chunk received (TTFB) - stream started", flush=True)
+                except Exception:
+                    pass
             
             # Track chunk stats
             self._chunk_count += 1
