@@ -83,18 +83,21 @@ Before next question, acknowledge briefly: "I see" / "Good" / "Okay" / "Makes se
 Don't robotically repeat the same phrase. Mix it up like a real human.
 
 ### Rule 7: TIME TRACKING (Internal Only)
-- 0-10 min: Background, family, education
-- 10-20 min: Career choice, banking knowledge
-- 20-27 min: Job readiness, strengths
-- 27-30 min: Closing
+- First ~5 min: Intro only (greet, name, brief introduction).
+- Middle: Main interview – ask questions (background, career, banking, job readiness). **Keep asking questions; do NOT say goodbye or "let's end" until the last 5 minutes.**
+- Last ~5 min: Closing only – then say "we're nearing the end", "any questions for us?", thank you, goodbye.
 
-**Never mention:** "We have 5 minutes left" or any time pressure.
+**Never mention:** "We have 5 minutes left" or any time pressure to the candidate.
+
+**CRITICAL – DO NOT CONCLUDE EARLY:** Do NOT say "thank you for your time", "let's wrap up", "we're nearing the end", "goodbye", or any closing until the **last 5 minutes only** of the scheduled interview. Concluding when 10 minutes remain is **wrong**. Concluding when 5 minutes or less remain is **correct**. If the interview is 30 min, ask questions until minute 25, then close only in minutes 25–30. If 45 min, ask until minute 40, then close only in 40–45. If 60 min, ask until minute 55, then close only in 55–60. Keep asking questions; do NOT wrap up early.
+
+**You do not see the clock.** Assume there is still plenty of time left. Do NOT conclude in the "last 10 minutes" – only in the **last 5 minutes**. When in doubt, ask another question instead of closing.
 
 ---
 
 ## INTERVIEW STRUCTURE
 
-### PHASE 1: WELCOME (3-4 min)
+### PHASE 1: WELCOME (first ~5 min)
 
 **Greet naturally (choose style):**
 - "Good morning! Welcome. Please sit. I'm [Name], your interviewer today."
@@ -108,9 +111,9 @@ Don't robotically repeat the same phrase. Mix it up like a real human.
 
 ---
 
-### PHASE 2: MAIN INTERVIEW (22-23 min)
+### PHASE 2: MAIN INTERVIEW (middle – until last ~5 min)
 
-Explore these areas naturally - **don't follow as rigid checklist**:
+**Do NOT move to closing or say goodbye until the last 5 minutes (not the last 10). If 10 minutes remain, keep asking questions.** Keep asking questions from the areas below. Explore naturally - **don't follow as rigid checklist**:
 
 **A. FAMILY & BACKGROUND**
 Start with parents' occupations. If farming family → crops, seasons, challenges. If business → why banking instead? Then hometown, what it's known for, local occupations.
@@ -128,14 +131,9 @@ Key strengths, goals, why hire them, ready to join.
 
 ---
 
-### PHASE 3: CLOSING (3-4 min)
+### PHASE 3: CLOSING (last ~5 min only)
 
-"[Name], we're nearing the end of our conversation."
-
-Ask: "Any questions for us?" / "Anything else to add?"
-
-**Close warmly:**
-"Thank you, [Name]. Good answers today. Your [mention positive] is relevant. Results will be announced soon. Best of luck!"
+**Only in the last 5 minutes** (not the last 10) of the scheduled interview: say "[Name], we're nearing the end of our conversation." Ask: "Any questions for us?" / "Anything else to add?" Then close warmly: "Thank you, [Name]. Good answers today. Your [mention positive] is relevant. Results will be announced soon. Best of luck!" Do NOT use this closing phase when 10 minutes remain – only when 5 or fewer minutes remain.
 
 ---
 
@@ -621,27 +619,25 @@ CRITICAL RULES:
     def _adapt_instructions_for_duration(self, instructions: str, duration_minutes: int) -> str:
         """
         Adapt agent instructions based on interview duration.
-        Adjusts time tracking, phase timing, and question count guidance.
+        First ~5 min intro, middle = Q&A until last ~5 min, last ~5 min closing.
+        For 30 min: intro 5, main 20, close 5. For 45: intro 5, main 35, close 5. For 60: intro 5, main 50, close 5.
         """
-        # Calculate proportional timings
-        intro_percent = 0.10  # 10% for intro
-        main_percent = 0.85   # 85% for main interview
-        closing_percent = 0.05  # 5% for closing
+        import re
         
-        intro_minutes = max(0.5, int(duration_minutes * intro_percent))
-        main_minutes = int(duration_minutes * main_percent)
-        closing_minutes = max(0.5, int(duration_minutes * closing_percent))
+        # Fixed 5 min intro and 5 min closing for 30/45/60; proportional for shorter
+        if duration_minutes >= 25:
+            intro_minutes = 5
+            closing_minutes = 5
+        else:
+            intro_minutes = max(1, duration_minutes // 6)
+            closing_minutes = max(1, duration_minutes // 10)
+        main_minutes = duration_minutes - intro_minutes - closing_minutes
+        main_start = intro_minutes
+        closing_start = duration_minutes - closing_minutes
         
-        # Calculate time tracking phases (proportional)
-        phase1_end = int(duration_minutes * 0.33)  # First third: Background
-        phase2_end = int(duration_minutes * 0.66)  # Second third: Career/banking
-        phase3_end = int(duration_minutes * 0.90)  # Last 10%: Job readiness
-        
-        # Estimate question count based on duration
-        # Roughly 1 question per 2 minutes for main interview
+        # Estimate question count: ~1 question per 2 min in main phase
         estimated_questions = max(2, int(main_minutes / 2))
         
-        # Replace duration-specific content in instructions
         adapted = instructions
         
         # Replace title with actual duration
@@ -650,18 +646,20 @@ CRITICAL RULES:
             f"## RRB/IBPS Officer Scale-I Interview ({duration_minutes} Minutes)"
         )
         
-        # Replace time tracking section
-        import re
-        # Match the entire Rule 7 section including the time ranges and "Never mention" line
-        time_tracking_pattern = r"### Rule 7: TIME TRACKING \(Internal Only\)\n- 0-10 min:.*?\n- 27-30 min: Closing\n\n\*\*Never mention:\*\*"
+        # Replace Rule 7 time tracking (new format: First ~5 min, Middle, Last ~5 min, CRITICAL, You do not see the clock)
+        time_tracking_pattern = r"### Rule 7: TIME TRACKING \(Internal Only\)\n- First ~5 min:.*?\n- Middle:.*?\n- Last ~5 min:.*?\n\n\*\*Never mention:\*\*.*?\n\n\*\*CRITICAL – DO NOT CONCLUDE EARLY:\*\*.*?until it is actually time to close\.\n\n\*\*You do not see the clock\.\*\*.*?instead of closing\.\n"
         new_time_tracking = f"""### Rule 7: TIME TRACKING (Internal Only)
-- 0-{phase1_end} min: Background, family, education
-- {phase1_end}-{phase2_end} min: Career choice, banking knowledge
-- {phase2_end}-{phase3_end} min: Job readiness, strengths
-- {phase3_end}-{duration_minutes} min: Closing
+- First ~{intro_minutes} min: Intro only (greet, name, brief introduction).
+- Minutes {main_start}-{closing_start} (~{main_minutes} min): Main interview – ask questions. **Keep asking questions; do NOT say goodbye or "let's end" until the last {closing_minutes} minutes.**
+- Last ~{closing_minutes} min (minutes {closing_start}-{duration_minutes}): Closing only – then say "we're nearing the end", thank you, goodbye.
 
-**Never mention:**"""
-        
+**Never mention:** "We have 5 minutes left" or any time pressure to the candidate.
+
+**CRITICAL – DO NOT CONCLUDE EARLY:** Do NOT say "thank you for your time", "let's wrap up", "we're nearing the end", "goodbye", or any closing until the **last {closing_minutes} minutes only**. Concluding when 10 minutes remain is **wrong**. Concluding when {closing_minutes} or fewer minutes remain is **correct**. This interview is **{duration_minutes} minutes**. Ask questions until minute {closing_start}, then close only in minutes {closing_start}-{duration_minutes}. Keep asking questions; do NOT wrap up early.
+
+**You do not see the clock.** Assume there is still plenty of time left. Do NOT conclude in the "last 10 minutes" – only in the **last {closing_minutes} minutes**. When in doubt, ask another question instead of closing.
+
+"""
         adapted = re.sub(
             time_tracking_pattern,
             new_time_tracking,
@@ -669,18 +667,39 @@ CRITICAL RULES:
             flags=re.DOTALL
         )
         
-        # Replace phase timing (escape parentheses in regex)
-        phase1_pattern = r"### PHASE 1: WELCOME \(3-4 min\)"
-        new_phase1 = f"### PHASE 1: WELCOME ({intro_minutes} min)"
+        # Replace phase timing (base now has "first ~5 min", "middle – until last ~5 min", "last ~5 min only")
+        phase1_pattern = r"### PHASE 1: WELCOME \(first ~5 min\)"
+        new_phase1 = f"### PHASE 1: WELCOME (first ~{intro_minutes} min)"
         adapted = re.sub(phase1_pattern, new_phase1, adapted)
         
-        phase2_pattern = r"### PHASE 2: MAIN INTERVIEW \(22-23 min\)"
-        new_phase2 = f"### PHASE 2: MAIN INTERVIEW ({main_minutes} min)"
+        phase2_pattern = r"### PHASE 2: MAIN INTERVIEW \(middle – until last ~5 min\)"
+        new_phase2 = f"### PHASE 2: MAIN INTERVIEW (minutes {main_start}-{closing_start}, ~{main_minutes} min – do NOT close before minute {closing_start})"
         adapted = re.sub(phase2_pattern, new_phase2, adapted)
         
-        phase3_pattern = r"### PHASE 3: CLOSING \(3-4 min\)"
-        new_phase3 = f"### PHASE 3: CLOSING ({closing_minutes} min)"
+        phase3_pattern = r"### PHASE 3: CLOSING \(last ~5 min only\)"
+        new_phase3 = f"### PHASE 3: CLOSING (last ~{closing_minutes} min only – minutes {closing_start}-{duration_minutes})"
         adapted = re.sub(phase3_pattern, new_phase3, adapted)
+        
+        # Replace "last 5 minutes" in PHASE 3 body with actual closing_minutes
+        adapted = re.sub(
+            r"\*\*Only in the last 5 minutes\*\* of the scheduled interview:",
+            f"**Only in the last {closing_minutes} minutes** (minutes {closing_start}-{duration_minutes}) of the scheduled interview:",
+            adapted,
+            count=1
+        )
+        adapted = re.sub(
+            r"Do NOT use this closing phase before the last 5 minutes\.\n",
+            f"Do NOT use this closing phase before minute {closing_start}.\n",
+            adapted,
+            count=1
+        )
+        # PHASE 2 body: "last 5 minutes of the scheduled duration"
+        adapted = re.sub(
+            r"Do NOT move to closing or say goodbye until the last 5 minutes of the scheduled duration\.\*\*",
+            f"Do NOT move to closing or say goodbye until minute {closing_start} (last {closing_minutes} min).**",
+            adapted,
+            count=1
+        )
         
         # Replace question count guidance
         question_guidance_pattern = r"\*\*Use as resource pool - pick what fits naturally\. You'll only ask 10-15 in 30 minutes\.\*\*"
@@ -731,21 +750,31 @@ CRITICAL RULES:
 **Strategy:** Balanced coverage. Allow brief follow-ups. Cover most important areas.
 """
         elif duration_minutes >= 45:
-            duration_guidance = """
-## DURATION-SPECIFIC GUIDANCE (45+ Minutes)
+            _close_start = duration_minutes - 5
+            duration_guidance = f"""
+## DURATION-SPECIFIC GUIDANCE ({duration_minutes} Minutes)
 
-**Focus Areas:**
-- Intro (4-5 minutes): Comprehensive introduction
-- Main interview (37-38 minutes): 15-20 questions
-  - Deep dive into all areas
-  - Multiple follow-up questions
-  - Explore interesting threads in detail
-- Closing (3-4 minutes): Comprehensive feedback
+**Strict timing – do NOT conclude early:**
+- **First 5 min:** Intro only (greet, name, brief introduction).
+- **Minutes 5–{_close_start}:** Main interview – ask questions. Keep asking; do NOT say goodbye or "we're nearing the end" until minute {_close_start}.
+- **Last 5 min (minutes {_close_start}–{duration_minutes}):** Closing only – then say "we're nearing the end", any questions for us, thank you, goodbye.
 
-**Strategy:** Thorough assessment. Explore topics in depth. Multiple follow-ups allowed.
+**Strategy:** Ask questions throughout the main phase. Only in the last 5 minutes move to closing. Do NOT conclude when 10 minutes remain – only when 5 or fewer remain. Do not wrap up early.
+"""
+        elif duration_minutes >= 20:
+            # 30 minutes (and 20–44): 5 min intro, main until last 5 min, 5 min closing
+            _close_start = duration_minutes - 5
+            duration_guidance = f"""
+## DURATION-SPECIFIC GUIDANCE ({duration_minutes} Minutes)
+
+**Strict timing – do NOT conclude early:**
+- **First 5 min:** Intro only (greet, name, brief introduction).
+- **Minutes 5–{_close_start}:** Main interview – ask questions. Keep asking; do NOT say goodbye or "we're nearing the end" until minute {_close_start}.
+- **Last 5 min (minutes {_close_start}–{duration_minutes}):** Closing only – then say "we're nearing the end", any questions for us, thank you, goodbye.
+
+**Strategy:** Ask questions throughout the main phase. Only in the last 5 minutes move to closing. Do NOT conclude when 10 minutes remain – only when 5 or fewer remain. Do not wrap up early.
 """
         else:
-            # 30 minutes (default) - no special guidance needed
             duration_guidance = ""
         
         # Insert duration guidance after the interview structure section
