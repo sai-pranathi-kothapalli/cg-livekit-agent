@@ -140,8 +140,8 @@ class FallbackLLMChat:
                     # Close current chat and start new one with fallback
                     try:
                         await self._active_chat.__aexit__(None, None, None)
-                    except:
-                        pass  # Ignore cleanup errors
+                    except Exception as cleanup_err:
+                        logger.debug(f"Ignoring chat cleanup error during fallback switch: {cleanup_err}")
                     
                     # Start fallback chat
                     self._active_chat = self._fallback_llm.chat(*self._args, **self._kwargs)
