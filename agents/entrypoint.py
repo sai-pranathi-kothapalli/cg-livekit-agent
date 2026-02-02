@@ -29,7 +29,7 @@ if backend_path.exists() and str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from app.config import Config, get_config  # type: ignore
-from app.utils.datetime_utils import get_now_ist  # type: ignore
+from app.utils.datetime_utils import get_now_ist, to_ist  # type: ignore
 from agents.professional_arjun import ProfessionalArjun
 from agents.utils import get_track_source_name
 # from app.services.application_form_service import ApplicationFormService  # Service not found in backend
@@ -280,10 +280,18 @@ async def entrypoint(ctx: JobContext) -> None:
                                     try:
                                         slot_start = datetime.fromisoformat(slot_start_str.replace('Z', '+00:00'))
                                         slot_end = datetime.fromisoformat(slot_end_str.replace('Z', '+00:00'))
-                                        duration_seconds = (slot_end - slot_start).total_seconds()
+                                        # Normalize to IST so comparison with current_time_ist is correct (avoids early end from UTC vs IST)
+                                        slot_start_ist = to_ist(slot_start)
+                                        slot_end_ist = to_ist(slot_end)
+                                        duration_seconds = (slot_end_ist - slot_start_ist).total_seconds()
                                         interview_duration_minutes = int(duration_seconds / 60)
-                                        scheduled_end_time = slot_end
-                                        logger.info(f"⏰ Using slot duration: {interview_duration_minutes} minutes (from slot {slot_id})")
+                                        scheduled_end_time = slot_end_ist
+                                        # Enforce minimum 30 min so interview does not end early (e.g. 15-min slot data error)
+                                        if interview_duration_minutes < 30:
+                                            logger.warning(f"⏰ Slot duration {interview_duration_minutes} min < 30; using 30 min from start")
+                                            interview_duration_minutes = 30
+                                            scheduled_end_time = interview_start_time + timedelta(minutes=30)
+                                        logger.info(f"⏰ Using slot duration: {interview_duration_minutes} minutes (from slot {slot_id}), end at IST {scheduled_end_time}")
                                     except Exception as e:
                                         logger.warning(f"Could not parse slot times: {e}")
                         except Exception as e:
@@ -297,10 +305,10 @@ async def entrypoint(ctx: JobContext) -> None:
                                 scheduled_at = datetime.fromisoformat(scheduled_at_str.replace('Z', '+00:00'))
                             else:
                                 scheduled_at = datetime.fromisoformat(scheduled_at_str)
-                            
-                            # Default interview duration: 30 minutes
-                            scheduled_end_time = scheduled_at + timedelta(minutes=interview_duration_minutes)
-                            logger.info(f"⏰ Interview scheduled: {scheduled_at}, will end at: {scheduled_end_time} ({interview_duration_minutes} min duration)")
+                            scheduled_at_ist = to_ist(scheduled_at)
+                            # Default interview duration: 30 minutes; end time in IST for correct comparison
+                            scheduled_end_time = scheduled_at_ist + timedelta(minutes=interview_duration_minutes)
+                            logger.info(f"⏰ Interview scheduled: {scheduled_at_ist} IST, will end at: {scheduled_end_time} ({interview_duration_minutes} min duration)")
                         except Exception as e:
                             logger.warning(f"Could not parse scheduled_at: {e}, using default duration")
             except Exception as e:
@@ -310,6 +318,14 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.info(f"⏰ Interview time limit: {interview_duration_minutes} minutes (ends at {scheduled_end_time})")
         else:
             logger.info(f"⏰ Using default interview duration: {interview_duration_minutes} minutes from start")
+        
+        # Set session time in context so LLM wrapper can inject "current minute X of Y" into chat context
+        try:
+            from agents.session_time import set_session_time
+            set_session_time(interview_start_time, interview_duration_minutes)
+            logger.info(f"⏰ Session time context set: {interview_duration_minutes} min (LLM will receive current minute each turn)")
+        except Exception as e:
+            logger.warning(f"Could not set session time context: {e}")
         
         # Step 5: Turn detection - Using VAD only
         logger.info("Step 5: Initializing Turn Detection...")
@@ -644,6 +660,7 @@ async def entrypoint(ctx: JobContext) -> None:
         max_consecutive_errors = 5
         interview_time_limit_reached = False
         warning_sent = False  # Track if 2-minute warning was sent
+        end_interview_sent_for_last_2 = False  # Send END_INTERVIEW once when timer enters last 2 min (LLM concludes based on timer)
         
         # Log initial room state
         logger.info(f"[DEBUG] Room monitoring started - connected: {ctx.room.isconnected()}, remote_participants: {len(ctx.room.remote_participants)}")
@@ -697,6 +714,18 @@ async def entrypoint(ctx: JobContext) -> None:
                     except Exception as e:
                         logger.debug(f"⚠️  Failed to send time update: {e}")
                 
+                # When timer enters last 2 minutes, send END_INTERVIEW once so the LLM concludes (matches timer on top left; TIME REMAINING is fed to LLM each turn)
+                if not end_interview_sent_for_last_2 and time_remaining_minutes > 0 and time_remaining_minutes <= 2:
+                    end_interview_sent_for_last_2 = True
+                    try:
+                        closing_instructions = """SYSTEM: END_INTERVIEW.
+You may now conclude the interview (last 2 minutes). Politely conclude in 2–3 sentences: thank the candidate, say the interview is complete, and that they will be redirected to the evaluation page where they can view results and feedback. Wish them well. Keep it brief and professional."""
+                        await session.generate_reply(instructions=closing_instructions)
+                        await asyncio.sleep(5)
+                        logger.info(f"✅ Sent END_INTERVIEW (timer in last 2 min: {time_remaining_minutes:.1f} min remaining)")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Could not send END_INTERVIEW for last 2 min: {e}")
+                
                 # Send 2-minute warning before time limit
                 if not warning_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 2:
                     warning_sent = True
@@ -720,21 +749,18 @@ async def entrypoint(ctx: JobContext) -> None:
                     logger.info("⏰ Interview time limit reached - ending interview gracefully")
                     print("⏰ Interview time limit reached - ending interview", flush=True)
                     
-                    # Send final closing message from agent with clear instructions
-                    try:
-                        closing_instructions = """The interview time has been completed. Thank the candidate warmly and inform them that:
-1. The interview is now complete
-2. They will be redirected to the evaluation page shortly
-3. They can view their interview results and evaluation details there
-
-Keep it brief, professional, and clear - about 2-3 sentences. Example: "Thank you [Name] for your time today. Our interview time has been completed. You will now be redirected to the evaluation page where you can view your interview results and detailed feedback. Best of luck!" """
-                        
-                        await session.generate_reply(instructions=closing_instructions)
-                        await asyncio.sleep(5)  # Wait for closing message to be fully spoken (increased from 3 to 5 seconds)
-                        logger.info("✅ Closing message completed")
-                    except Exception as e:
-                        logger.warning(f"⚠️  Could not generate closing message: {e}")
-                        # Even if message fails, continue with completion
+                    # Send END_INTERVIEW/closing only if we didn't already do it in the last 2 min (agent already concluded)
+                    if not end_interview_sent_for_last_2:
+                        try:
+                            closing_instructions = """SYSTEM: END_INTERVIEW.
+You may now conclude the interview. Politely conclude in 2–3 sentences: thank the candidate, say the interview is complete, and that they will be redirected to the evaluation page where they can view results and feedback. Wish them well. Keep it brief and professional."""
+                            await session.generate_reply(instructions=closing_instructions)
+                            await asyncio.sleep(5)
+                            logger.info("✅ Closing message completed")
+                        except Exception as e:
+                            logger.warning(f"⚠️  Could not generate closing message: {e}")
+                    else:
+                        logger.info("✅ Closing already sent in last 2 min; skipping duplicate")
                     
                     # Send completion signal to frontend via data channel
                     try:

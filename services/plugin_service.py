@@ -202,9 +202,13 @@ class PluginService:
             
             original_chat = llm_plugin.chat
             
+            # [OK] Inject current minute into chat context so LLM knows elapsed time (avoids concluding early)
+            from services.time_context_llm_wrapper import TimeContextLLMWrapper
+            time_context_wrapper = TimeContextLLMWrapper(original_chat)
+            
             # Wrap with history management
             history_wrapper = HistoryManagedLLMWrapper(
-                original_chat=original_chat,
+                original_chat=time_context_wrapper,
                 transcript_service=transcript_service,
                 session_id=room.name,  # [OK] Pass room name as session_id
                 max_conversation_tokens=self.config.MAX_CONVERSATION_TOKENS,
@@ -217,7 +221,7 @@ class PluginService:
             
             llm_plugin.chat = timing_wrapper
             logger.info(
-                f"   [OK] LLM chat wrapped for transcript forwarding (quiet mode), history management, and performance timing "
+                f"   [OK] LLM chat wrapped: time context (current minute), transcript, history, timing "
                 f"(max_tokens={self.config.MAX_CONVERSATION_TOKENS}, "
                 f"max_messages={self.config.MAX_CONVERSATION_MESSAGES})"
             )
