@@ -19,7 +19,7 @@ logger = get_logger(__name__)
 class TimeContextLLMWrapper:
     """
     Wraps LLM chat to inject a system message with current minute (X of Y)
-    so the LLM knows elapsed time and does not conclude before the last 2 minutes.
+    so the LLM knows elapsed time and does not conclude before the last 5 minutes.
     """
 
     def __init__(self, original_chat: Callable[..., Any]):
@@ -34,14 +34,12 @@ class TimeContextLLMWrapper:
                     now = get_now_ist()
                     elapsed_minutes = (now - start_time).total_seconds() / 60
                     minutes_remaining = max(0, duration_minutes - elapsed_minutes)
-                    # Same "time remaining" as the timer on top left of the interview screen — we feed this to the LLM every turn
-                    # Instruct LLM: conclude ONLY when TIME REMAINING is 2 minutes or less (same as the timer on top left)
+                    # Same "time remaining" as the timer on top left of the interview screen
                     time_msg = (
                         f"TIME REMAINING: {int(minutes_remaining)} minutes (same as the timer on top left in the interview). "
                         f"Current: minute {int(elapsed_minutes)} of {duration_minutes}. "
-                        f"RULE: Only when TIME REMAINING is 2 minutes or less may you conclude, say goodbye, thank the candidate, or say the interview is complete. "
-                        f"If TIME REMAINING is more than 2 minutes, you MUST NOT conclude or say goodbye—even if the candidate says they have no questions or says goodbye. Instead, say we still have time and ask another question from the QUESTION BANK. "
-                        f"When TIME REMAINING is 2 or less, the system may send END_INTERVIEW; then you may conclude. Until then, keep asking questions."
+                        f"When TIME REMAINING is 5 minutes or less, the system may send END_INTERVIEW soon; until you receive END_INTERVIEW, keep asking one question from the QUESTION BANK. "
+                        f"Do NOT conclude or say goodbye until you receive END_INTERVIEW from the system."
                     )
                     chat_ctx.add_message(role="system", content=time_msg)
                     logger.debug(

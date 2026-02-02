@@ -660,7 +660,6 @@ async def entrypoint(ctx: JobContext) -> None:
         max_consecutive_errors = 5
         interview_time_limit_reached = False
         warning_sent = False  # Track if 2-minute warning was sent
-        end_interview_sent_for_last_2 = False  # Send END_INTERVIEW once when timer enters last 2 min (LLM concludes based on timer)
         
         # Log initial room state
         logger.info(f"[DEBUG] Room monitoring started - connected: {ctx.room.isconnected()}, remote_participants: {len(ctx.room.remote_participants)}")
@@ -714,18 +713,6 @@ async def entrypoint(ctx: JobContext) -> None:
                     except Exception as e:
                         logger.debug(f"⚠️  Failed to send time update: {e}")
                 
-                # When timer enters last 2 minutes, send END_INTERVIEW once so the LLM concludes (matches timer on top left; TIME REMAINING is fed to LLM each turn)
-                if not end_interview_sent_for_last_2 and time_remaining_minutes > 0 and time_remaining_minutes <= 2:
-                    end_interview_sent_for_last_2 = True
-                    try:
-                        closing_instructions = """SYSTEM: END_INTERVIEW.
-You may now conclude the interview (last 2 minutes). Politely conclude in 2–3 sentences: thank the candidate, say the interview is complete, and that they will be redirected to the evaluation page where they can view results and feedback. Wish them well. Keep it brief and professional."""
-                        await session.generate_reply(instructions=closing_instructions)
-                        await asyncio.sleep(5)
-                        logger.info(f"✅ Sent END_INTERVIEW (timer in last 2 min: {time_remaining_minutes:.1f} min remaining)")
-                    except Exception as e:
-                        logger.warning(f"⚠️  Could not send END_INTERVIEW for last 2 min: {e}")
-                
                 # Send 2-minute warning before time limit
                 if not warning_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 2:
                     warning_sent = True
@@ -749,18 +736,18 @@ You may now conclude the interview (last 2 minutes). Politely conclude in 2–3 
                     logger.info("⏰ Interview time limit reached - ending interview gracefully")
                     print("⏰ Interview time limit reached - ending interview", flush=True)
                     
-                    # Send END_INTERVIEW/closing only if we didn't already do it in the last 2 min (agent already concluded)
-                    if not end_interview_sent_for_last_2:
-                        try:
-                            closing_instructions = """SYSTEM: END_INTERVIEW.
+                    # Send END_INTERVIEW so the agent may conclude (backend-controlled end)
+                    try:
+                        closing_instructions = """SYSTEM: END_INTERVIEW.
+
 You may now conclude the interview. Politely conclude in 2–3 sentences: thank the candidate, say the interview is complete, and that they will be redirected to the evaluation page where they can view results and feedback. Wish them well. Keep it brief and professional."""
-                            await session.generate_reply(instructions=closing_instructions)
-                            await asyncio.sleep(5)
-                            logger.info("✅ Closing message completed")
-                        except Exception as e:
-                            logger.warning(f"⚠️  Could not generate closing message: {e}")
-                    else:
-                        logger.info("✅ Closing already sent in last 2 min; skipping duplicate")
+                        
+                        await session.generate_reply(instructions=closing_instructions)
+                        await asyncio.sleep(5)  # Wait for closing message to be fully spoken (increased from 3 to 5 seconds)
+                        logger.info("✅ Closing message completed")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Could not generate closing message: {e}")
+                        # Even if message fails, continue with completion
                     
                     # Send completion signal to frontend via data channel
                     try:
