@@ -1,8 +1,8 @@
 """
 Time Context LLM Wrapper
 
-Injects current interview minute into the LLM chat context so the model
-knows elapsed time and does not conclude early (e.g. before 25 min in a 30 min interview).
+Injects current interview minute and time remaining into the LLM chat context
+for pacing. Conclusion is triggered by the backend at scheduled end (90% or 100%).
 """
 
 from typing import Any, Callable
@@ -18,8 +18,8 @@ logger = get_logger(__name__)
 
 class TimeContextLLMWrapper:
     """
-    Wraps LLM chat to inject a system message with current minute (X of Y)
-    so the LLM knows elapsed time and does not conclude before the last 5 minutes.
+    Injects TIME REMAINING and current minute (X of Y) into chat context.
+    No conclusion wording; backend triggers closing at scheduled time.
     """
 
     def __init__(self, original_chat: Callable[..., Any]):
@@ -34,12 +34,11 @@ class TimeContextLLMWrapper:
                     now = get_now_ist()
                     elapsed_minutes = (now - start_time).total_seconds() / 60
                     minutes_remaining = max(0, duration_minutes - elapsed_minutes)
-                    # Same "time remaining" as the timer on top left of the interview screen
+                    # Time context for pacing only; conclusion is triggered by backend at scheduled end (no conclusion wording here)
                     time_msg = (
-                        f"TIME REMAINING: {int(minutes_remaining)} minutes (same as the timer on top left in the interview). "
+                        f"TIME REMAINING: {int(minutes_remaining)} minutes (same as the timer on top left). "
                         f"Current: minute {int(elapsed_minutes)} of {duration_minutes}. "
-                        f"When TIME REMAINING is 5 minutes or less, the system may send END_INTERVIEW soon; until you receive END_INTERVIEW, keep asking one question from the QUESTION BANK. "
-                        f"Do NOT conclude or say goodbye until you receive END_INTERVIEW from the system."
+                        f"Keep asking one question at a time from the QUESTION BANK. Do not say goodbye or end the interview; ask the next question."
                     )
                     chat_ctx.add_message(role="system", content=time_msg)
                     logger.debug(

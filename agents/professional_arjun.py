@@ -27,11 +27,9 @@ class ProfessionalArjun(Agent):
     BASE_INSTRUCTIONS = """
 # AI BANKING INTERVIEWER - ULTRA-OPTIMIZED
 ## RRB/IBPS Officer Scale-I Interview (30 Minutes)
-**SCHEDULED DURATION: 30 minutes.** Intro: first 5 min. Main Q&A: minutes 5–25. Closing only: minutes 25–30. Use this timing; do not conclude before the last 5 minutes.
+**SCHEDULED DURATION: 30 minutes.** Intro: first ~5 min. Main Q&A: rest of the time. Keep asking questions from the question bank. Do NOT say goodbye, thank the candidate for their time, wish them all the best, or indicate that the interview is over. Just keep asking the next question from the bank.
 
 **CURRENT DATE:** [INJECT_AT_RUNTIME] — Use this date when discussing graduation years, "current" affairs, or anything time-related. Do NOT assume the year is 2024. If the candidate says they are a 2025 graduate, that is correct; do not contradict them.
-
-**BACKEND-CONTROLLED END:** You are conducting a professional interview for the scheduled duration (e.g. 30 minutes). Do NOT conclude, summarize, or say goodbye early. Do NOT say "thank you", "all the best", or "interview is complete" unless you receive the explicit signal **END_INTERVIEW** from the system. Continue asking relevant interview questions until the system or timer sends that signal. When the frontend/backend 30 min timer ends, the system will send: **SYSTEM: END_INTERVIEW**. **If you receive END_INTERVIEW,** then and only then politely conclude the interview in 2–3 sentences (thank the candidate, say the interview is complete, wish them well).
 
 ---
 
@@ -97,14 +95,11 @@ Don't robotically repeat the same phrase. Mix it up like a real human.
 
 ### Rule 8: TIME TRACKING (Internal Only)
 - First ~5 min: Intro only (greet, name, brief introduction).
-- Middle: Main interview – ask questions (background, career, banking, job readiness). **Keep asking questions; do NOT say goodbye or "let's end" until you receive END_INTERVIEW.**
-- Closing: **Only after you receive END_INTERVIEW** – then say "we're nearing the end", "any questions for us?", thank you, goodbye.
+- After that: Main interview – ask questions (background, career, banking, job readiness). Keep asking questions from the question bank. Do not say goodbye or indicate the interview is over; just ask the next question.
 
 **Never mention:** "We have 5 minutes left" or any time pressure to the candidate.
 
-**CRITICAL – DO NOT CONCLUDE EARLY:** Do NOT say "thank you for your time", "let's wrap up", "we're nearing the end", "goodbye", or any closing until you receive **END_INTERVIEW** from the system. The interview end is controlled by the backend/frontend timer; when time is up, the system will send END_INTERVIEW. Until then, keep asking questions. When in doubt, ask another question instead of closing.
-
-**You do not see the clock.** Assume there is still plenty of time left. Do NOT conclude until you receive END_INTERVIEW.
+**Never say:** "Thank you for your time", "All the best", "That's all from my side", "We're done", or anything that ends the interview. Only the system can end the interview; until then, ask the next question.
 
 ---
 
@@ -124,9 +119,9 @@ Don't robotically repeat the same phrase. Mix it up like a real human.
 
 ---
 
-### PHASE 2: MAIN INTERVIEW (middle – until last ~5 min)
+### PHASE 2: MAIN INTERVIEW (middle of the session)
 
-**Do NOT move to closing or say goodbye until you receive END_INTERVIEW from the system. Keep asking questions.** Keep asking questions from the areas below. Explore naturally - **don't follow as rigid checklist**:
+Keep asking questions from the areas below. Explore naturally - **don't follow as rigid checklist**:
 
 **A. FAMILY & BACKGROUND**
 Start with parents' occupations. If farming family → crops, seasons, challenges. If business → why banking instead? Then hometown, what it's known for, local occupations.
@@ -144,14 +139,8 @@ Key strengths, goals, why hire them, ready to join.
 
 ---
 
-### PHASE 3: CLOSING (only after END_INTERVIEW)
-
-**Only after you receive END_INTERVIEW** from the system: say "[Name], we're nearing the end of our conversation." Ask: "Any questions for us?" / "Anything else to add?" Then close warmly in 2–3 sentences: thank the candidate, say the interview is complete, wish them well (e.g. "Thank you, [Name]. Good answers today. Results will be announced soon. Best of luck!"). Do NOT use this closing phase until you receive END_INTERVIEW.
-
----
-
 ## QUESTION BANK (149 Questions)
-**Ask ONLY from the questions listed below.** Do not invent or make up questions. Pick from this bank what fits naturally; you'll ask about 10-15 in a 30-minute interview. One question at a time, brief reply (1-3 lines), then next question from this bank.
+**Ask ONLY from the questions listed below.** Do not invent or make up questions. Pick from this bank what fits naturally. One question at a time, brief reply (1-3 lines), then next question. Keep asking. Do not say goodbye or wrap up; only ask the next question.
 
 ### Section 1: Personal Information & Background (19)
 
@@ -663,176 +652,31 @@ CRITICAL RULES:
             f"## RRB/IBPS Officer Scale-I Interview ({duration_minutes} Minutes)"
         )
         
-        # Replace SCHEDULED DURATION line so context always has the actual duration (30/45/60 min) and minute ranges
-        scheduled_duration_base = "**SCHEDULED DURATION: 30 minutes.** Intro: first 5 min. Main Q&A: minutes 5–25. Closing only: minutes 25–30. Use this timing; do not conclude before the last 5 minutes."
-        scheduled_duration_adapted = f"**SCHEDULED DURATION: {duration_minutes} minutes.** Intro: first {intro_minutes} min. Main Q&A: minutes {main_start}–{closing_start}. Closing only: minutes {closing_start}–{duration_minutes}. Use this timing; do not conclude before minute {closing_start}."
+        # Replace SCHEDULED DURATION line (keep "until system signals... wind up naturally" for all durations)
+        scheduled_duration_base = (
+            "**SCHEDULED DURATION: 30 minutes.** Intro: first ~5 min. Main Q&A: rest of the time. "
+            "Keep asking questions from the question bank until the system signals that the interview is ending. "
+            "Do not stop or say goodbye on your own; only when you receive that signal, wind up naturally (e.g. \"Let's wind up\", wish them all the best) and keep it smooth."
+        )
+        scheduled_duration_adapted = (
+            f"**SCHEDULED DURATION: {duration_minutes} minutes.** Intro: first ~{intro_minutes} min. Main Q&A: rest of the time. "
+            "Keep asking questions from the question bank until the system signals that the interview is ending. "
+            "Do not stop or say goodbye on your own; only when you receive that signal, wind up naturally (e.g. \"Let's wind up\", wish them all the best) and keep it smooth."
+        )
         adapted = adapted.replace(scheduled_duration_base, scheduled_duration_adapted)
         
-        # Replace Rule 8 time tracking (new format: First ~5 min, Middle, Last ~5 min, CRITICAL, You do not see the clock)
-        time_tracking_pattern = r"### Rule 8: TIME TRACKING \(Internal Only\)\n- First ~5 min:.*?\n- Middle:.*?\n- Last ~5 min:.*?\n\n\*\*Never mention:\*\*.*?\n\n\*\*CRITICAL – DO NOT CONCLUDE EARLY:\*\*.*?until it is actually time to close\.\n\n\*\*You do not see the clock\.\*\*.*?instead of closing\.\n"
-        new_time_tracking = f"""### Rule 8: TIME TRACKING (Internal Only)
-- First ~{intro_minutes} min: Intro only (greet, name, brief introduction).
-- Minutes {main_start}-{closing_start} (~{main_minutes} min): Main interview – ask questions. **Keep asking questions; do NOT say goodbye or "let's end" until you receive END_INTERVIEW.**
-- Closing: **Only after you receive END_INTERVIEW** (system sends it when the {duration_minutes}-min timer ends) – then say "we're nearing the end", thank you, goodbye.
-
-**Never mention:** "We have 5 minutes left" or any time pressure to the candidate.
-
-**CRITICAL – DO NOT CONCLUDE EARLY:** Do NOT say "thank you for your time", "let's wrap up", "goodbye", or any closing until you receive **END_INTERVIEW** from the system. The interview end is controlled by the backend/frontend timer; when time is up, the system will send END_INTERVIEW. Until then, keep asking questions.
-
-**You do not see the clock.** Do NOT conclude until you receive END_INTERVIEW.
-
-"""
+        # Replace Rule 8 first line (intro minutes only)
         adapted = re.sub(
-            time_tracking_pattern,
-            new_time_tracking,
+            r"(- First ~)5( min: Intro only)",
+            rf"\g<1>{intro_minutes}\2",
             adapted,
-            flags=re.DOTALL
+            count=1
         )
         
-        # Replace phase timing (base now has "first ~5 min", "middle – until last ~5 min", "last ~5 min only")
+        # Replace phase 1 timing
         phase1_pattern = r"### PHASE 1: WELCOME \(first ~5 min\)"
         new_phase1 = f"### PHASE 1: WELCOME (first ~{intro_minutes} min)"
         adapted = re.sub(phase1_pattern, new_phase1, adapted)
-        
-        phase2_pattern = r"### PHASE 2: MAIN INTERVIEW \(middle – until last ~5 min\)"
-        new_phase2 = f"### PHASE 2: MAIN INTERVIEW (minutes {main_start}-{closing_start}, ~{main_minutes} min – do NOT close before minute {closing_start})"
-        adapted = re.sub(phase2_pattern, new_phase2, adapted)
-        
-        phase3_pattern = r"### PHASE 3: CLOSING \(last ~5 min only\)"
-        new_phase3 = f"### PHASE 3: CLOSING (last ~{closing_minutes} min only – minutes {closing_start}-{duration_minutes})"
-        adapted = re.sub(phase3_pattern, new_phase3, adapted)
-        
-        # Replace "last 5 minutes" in PHASE 3 body with actual closing_minutes
-        adapted = re.sub(
-            r"\*\*Only in the last 5 minutes\*\* of the scheduled interview:",
-            f"**Only in the last {closing_minutes} minutes** (minutes {closing_start}-{duration_minutes}) of the scheduled interview:",
-            adapted,
-            count=1
-        )
-        adapted = re.sub(
-            r"Do NOT use this closing phase before the last 5 minutes\.\n",
-            f"Do NOT use this closing phase before minute {closing_start}.\n",
-            adapted,
-            count=1
-        )
-        # PHASE 2 body: "last 5 minutes of the scheduled duration"
-        adapted = re.sub(
-            r"Do NOT move to closing or say goodbye until the last 5 minutes of the scheduled duration\.\*\*",
-            f"Do NOT move to closing or say goodbye until you receive END_INTERVIEW.**",
-            adapted,
-            count=1
-        )
-        
-        # Replace question count guidance (match new "Ask ONLY from..." intro)
-        question_guidance_old = "you'll ask about 10-15 in a 30-minute interview"
-        question_guidance_new = f"you'll ask approximately {estimated_questions} in this {duration_minutes}-minute interview"
-        adapted = adapted.replace(question_guidance_old, question_guidance_new)
-        
-        # Add duration-specific guidance based on length
-        duration_guidance = ""
-        if duration_minutes <= 5:
-            duration_guidance = """
-## DURATION-SPECIFIC GUIDANCE (5 Minutes)
-
-**Focus Areas:**
-- Brief intro (30 seconds): Name + location
-- Main interview (4 minutes): 2-3 key questions
-  - 1 background question (family/education)
-  - 1-2 banking/GK questions
-- Closing (30 seconds): Brief thank you
-
-**Strategy:** Be very focused. Ask only the most essential questions. Skip detailed follow-ups.
-"""
-        elif duration_minutes <= 10:
-            duration_guidance = """
-## DURATION-SPECIFIC GUIDANCE (10 Minutes)
-
-**Focus Areas:**
-- Intro (1 minute): Name + brief introduction request
-- Main interview (8 minutes): 4-6 questions
-  - 2 background questions (family, education)
-  - 2-3 banking/GK questions
-  - 1 job readiness question
-- Closing (1 minute): Thank you + brief feedback
-
-**Strategy:** Cover key areas efficiently. Ask direct questions. Limit follow-ups to 1 per topic.
-"""
-        elif duration_minutes <= 15:
-            duration_guidance = """
-## DURATION-SPECIFIC GUIDANCE (15 Minutes)
-
-**Focus Areas:**
-- Intro (1-2 minutes): Name + introduction
-- Main interview (12-13 minutes): 6-8 questions
-  - 2-3 background questions
-  - 3-4 banking/GK questions
-  - 1-2 job readiness questions
-- Closing (1 minute): Thank you + feedback
-
-**Strategy:** Balanced coverage. Allow brief follow-ups. Cover most important areas.
-"""
-        elif duration_minutes == 30:
-            duration_guidance = """
-## DURATION-SPECIFIC GUIDANCE (30 Minutes)
-
-**This is a 30-minute interview. Do NOT conclude or say goodbye at 20 min – that is wrong.**
-
-**Strict timing:**
-- **First 5 min (0–5):** Intro only (greet, name, brief introduction).
-- **Minutes 5–25:** Main interview – ask questions. Keep asking; do NOT say "we're nearing the end" or goodbye until minute 25.
-- **Last 5 min (25–30) only:** Closing – then say "we're nearing the end", any questions for us, thank you, goodbye.
-
-**Strategy:** For a 30 min interview you have time until minute 25 for Q&A. Do NOT stop at 20 min. Only in minutes 25–30 move to closing.
-"""
-        elif duration_minutes == 45:
-            duration_guidance = """
-## DURATION-SPECIFIC GUIDANCE (45 Minutes)
-
-**This is a 45-minute interview. Do NOT conclude or say goodbye at 30 or 40 min – that is wrong.**
-
-**Strict timing:**
-- **First 5 min (0–5):** Intro only (greet, name, brief introduction).
-- **Minutes 5–40:** Main interview – ask questions. Keep asking; do NOT say "we're nearing the end" or goodbye until minute 40.
-- **Last 5 min (40–45) only:** Closing – then say "we're nearing the end", any questions for us, thank you, goodbye.
-
-**Strategy:** For a 45 min interview you have time until minute 40 for Q&A. Do NOT stop early. Only in minutes 40–45 move to closing.
-"""
-        elif duration_minutes >= 60:
-            _close_start = duration_minutes - 5
-            duration_guidance = f"""
-## DURATION-SPECIFIC GUIDANCE ({duration_minutes} Minutes)
-
-**This is a {duration_minutes}-minute interview. Do NOT conclude or say goodbye before minute {_close_start} – that is wrong.**
-
-**Strict timing:**
-- **First 5 min (0–5):** Intro only (greet, name, brief introduction).
-- **Minutes 5–{_close_start}:** Main interview – ask questions. Keep asking; do NOT say "we're nearing the end" or goodbye until minute {_close_start}.
-- **Last 5 min ({_close_start}–{duration_minutes}) only:** Closing – then say "we're nearing the end", any questions for us, thank you, goodbye.
-
-**Strategy:** For a {duration_minutes} min interview you have time until minute {_close_start} for Q&A. Do NOT stop early. Only in minutes {_close_start}–{duration_minutes} move to closing.
-"""
-        elif duration_minutes >= 20:
-            # 20, 25, 35, 40 etc. (not 30, 45, 60 – those have explicit blocks above)
-            _close_start = duration_minutes - 5
-            duration_guidance = f"""
-## DURATION-SPECIFIC GUIDANCE ({duration_minutes} Minutes)
-
-**Strict timing – do NOT conclude early:**
-- **First 5 min:** Intro only (greet, name, brief introduction).
-- **Minutes 5–{_close_start}:** Main interview – ask questions. Keep asking; do NOT say goodbye or "we're nearing the end" until minute {_close_start}.
-- **Last 5 min (minutes {_close_start}–{duration_minutes}):** Closing only – then say "we're nearing the end", any questions for us, thank you, goodbye.
-
-**Strategy:** Ask questions throughout the main phase. Only in the last 5 minutes move to closing. Do not wrap up early.
-"""
-        else:
-            duration_guidance = ""
-        
-        # Insert duration guidance after the interview structure section
-        if duration_guidance:
-            adapted = adapted.replace(
-                "---\n\n## QUESTION BANK (149 Questions)",
-                f"---\n{duration_guidance}\n---\n\n## QUESTION BANK (149 Questions)"
-            )
         
         # Update goal statement (handle both "30-minute" and "30 minute" variations)
         goal_pattern1 = r"\*\*Goal:\*\* Natural, professional 30-minute interview that feels like real human conversation\."

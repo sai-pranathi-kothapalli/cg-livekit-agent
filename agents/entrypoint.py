@@ -660,6 +660,8 @@ async def entrypoint(ctx: JobContext) -> None:
         max_consecutive_errors = 5
         interview_time_limit_reached = False
         warning_sent = False  # Track if 2-minute warning was sent
+        closing_triggered_at_90 = False  # One-time trigger: send closing LLM call at 90%, then end
+        CLOSING_TRIGGER_RATIO = 0.9  # Trigger closing when elapsed >= 90% of scheduled duration
         
         # Log initial room state
         logger.info(f"[DEBUG] Room monitoring started - connected: {ctx.room.isconnected()}, remote_participants: {len(ctx.room.remote_participants)}")
@@ -674,15 +676,22 @@ async def entrypoint(ctx: JobContext) -> None:
                 elapsed_minutes = (current_time_ist - interview_start_time).total_seconds() / 60
                 
                 # Check time limit (either scheduled end time or duration from start)
+                # IMPORTANT: Never end before 90% of intended duration (avoids wrong slot/scheduled_end ending too early)
                 time_limit_reached = False
                 time_remaining_minutes = 0
-                
+                closing_threshold_minutes = interview_duration_minutes * CLOSING_TRIGGER_RATIO
+                at_least_90_pct = elapsed_minutes >= closing_threshold_minutes
+
                 if scheduled_end_time:
                     # Use scheduled end time if available
                     time_remaining_minutes = (scheduled_end_time - current_time_ist).total_seconds() / 60
-                    if current_time_ist >= scheduled_end_time:
+                    past_scheduled_end = current_time_ist >= scheduled_end_time
+                    # Only end on scheduled_end if we're also at least at 90% of duration (prevents early end from wrong slot/TZ)
+                    if past_scheduled_end and at_least_90_pct:
                         time_limit_reached = True
-                        logger.info(f"⏰ Interview time limit reached (scheduled end time: {scheduled_end_time})")
+                        logger.info(f"⏰ Interview time limit reached (scheduled end: {scheduled_end_time}, elapsed: {elapsed_minutes:.1f} min)")
+                    elif past_scheduled_end and not at_least_90_pct:
+                        logger.info(f"⏰ Scheduled end passed but elapsed {elapsed_minutes:.1f} min < 90% ({closing_threshold_minutes:.1f}) - waiting for 90% to avoid early end")
                 else:
                     # Use duration from start
                     time_remaining_minutes = interview_duration_minutes - elapsed_minutes
@@ -731,12 +740,22 @@ async def entrypoint(ctx: JobContext) -> None:
                     except Exception as e:
                         logger.warning(f"⚠️  Failed to send warning: {e}")
                 
-                if time_limit_reached:
+                # Trigger closing at 90% of scheduled duration (one LLM exit call) or at 100% (hard limit)
+                trigger_closing_now = (
+                    (not closing_triggered_at_90 and elapsed_minutes >= closing_threshold_minutes)
+                    or time_limit_reached
+                )
+                if trigger_closing_now:
+                    closing_triggered_at_90 = True
                     interview_time_limit_reached = True
-                    logger.info("⏰ Interview time limit reached - ending interview gracefully")
-                    print("⏰ Interview time limit reached - ending interview", flush=True)
+                    if elapsed_minutes >= closing_threshold_minutes and not time_limit_reached:
+                        logger.info(f"⏰ 90% of scheduled duration reached ({elapsed_minutes:.1f} min) - triggering closing")
+                        print("⏰ 90% reached - triggering closing", flush=True)
+                    else:
+                        logger.info("⏰ Interview time limit reached - ending interview gracefully")
+                        print("⏰ Interview time limit reached - ending interview", flush=True)
                     
-                    # Send END_INTERVIEW so the agent may conclude (backend-controlled end)
+                    # One LLM call: agent concludes (goodbye), then we end
                     try:
                         closing_instructions = """SYSTEM: END_INTERVIEW.
 
