@@ -34,11 +34,13 @@ class TimeContextLLMWrapper:
                     now = get_now_ist()
                     elapsed_minutes = (now - start_time).total_seconds() / 60
                     minutes_remaining = max(0, duration_minutes - elapsed_minutes)
-                    # Time context for pacing only; conclusion is triggered by backend at scheduled end (no conclusion wording here)
+                    # Time context for pacing only; conclusion is triggered by backend at scheduled end.
+                    # Reinforce every turn: you must still ask questions; you must not stop; do not let the model decide to end.
                     time_msg = (
-                        f"TIME REMAINING: {int(minutes_remaining)} minutes (same as the timer on top left). "
-                        f"Current: minute {int(elapsed_minutes)} of {duration_minutes}. "
-                        f"Keep asking one question at a time from the QUESTION BANK. Do not say goodbye or end the interview; ask the next question."
+                        f"TIME REMAINING: {int(minutes_remaining)} minutes. Minute {int(elapsed_minutes)} of {duration_minutes}. "
+                        f"You MUST still ask questions. You MUST NOT stop or end the interview. Do NOT let the model decide to end — only the system can end. "
+                        f"Do NOT say goodbye, thank the candidate for their time, wish them luck, or say 'that is all' / 'we are done'. "
+                        f"Your only job: ask the NEXT question from the QUESTION BANK. One question only."
                     )
                     chat_ctx.add_message(role="system", content=time_msg)
                     logger.debug(
