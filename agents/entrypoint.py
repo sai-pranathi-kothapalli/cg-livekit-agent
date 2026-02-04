@@ -368,25 +368,19 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("Step 6: Starting session...")
         print("Step 6: Starting session...", flush=True)
         
-        # Fetch dynamic agent instructions
-        try:
-            from app.services.prompt_service import get_prompt_service  # type: ignore
-            prompt_service = get_prompt_service(config)
-            agent_instructions = await prompt_service.get_prompt("agent_persona_arjun")
-            
-            if not agent_instructions:
-                logger.warning("[WARN]  Failed to fetch agent instructions from DB, using fallback")
-                print("[WARN]  Failed to fetch agent instructions from DB, using fallback", flush=True)
-        except Exception as e:
-            logger.warning(f"[WARN]  Error fetching agent instructions: {e}, using fallback")
-            print(f"[WARN]  Error fetching agent instructions: {e}, using fallback", flush=True)
-            agent_instructions = None
+        # Agent context comes from Job Description (admin dashboard). Single 'context' field in DB.
+        agent_instructions = None
+        if jd_data and jd_data.get("context"):
+            agent_instructions = jd_data["context"].strip()
+            logger.info("[OK] Using agent context from Job Description (admin)")
+        if not agent_instructions:
+            logger.info("[OK] No context in Job Description; using default agent instructions")
             
         try:
             agent = ProfessionalArjun(
                 candidate_profile=candidate_profile,
-                job_description=jd_data,
-                base_instructions=agent_instructions if agent_instructions else None,
+                job_description=None,  # Context is in base_instructions from JD; no separate JD section
+                base_instructions=agent_instructions or None,
                 duration_minutes=interview_duration_minutes
             )
             logger.info(f"✅ Agent created with duration: {interview_duration_minutes} minutes")
