@@ -661,6 +661,7 @@ async def entrypoint(ctx: JobContext) -> None:
         interview_time_limit_reached = False
         warning_sent = False  # Track if 2-minute warning was sent to frontend
         wrapping_up_instruction_sent = False  # One-time: tell agent to say "we are wrapping up" and ask final questions (~28 min)
+        conclude_instruction_sent = False  # One-time: tell agent to say "let us conclude" at ~29 min, no more questions
         closing_triggered = False  # One-time: send closing LLM call only when full duration reached (30 min)
         
         # Log initial room state
@@ -754,6 +755,21 @@ async def entrypoint(ctx: JobContext) -> None:
                         print("⏰ Wrapping-up instruction sent (~2 min left)", flush=True)
                     except Exception as e:
                         logger.warning(f"⚠️  Could not send wrapping-up instruction: {e}")
+                
+                # At ~1 min remaining: tell agent to say "let us conclude" only — do not ask more questions (one-time)
+                if not conclude_instruction_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 1:
+                    conclude_instruction_sent = True
+                    try:
+                        conclude_instructions = (
+                            "SYSTEM: You have about 1 minute left. Do NOT ask any more questions. "
+                            "Say clearly that we are concluding (e.g. 'We have a minute left, so let us conclude.' or 'That brings us to the end.'). "
+                            "One short sentence only. Do NOT say full goodbye yet; you will receive END_INTERVIEW in a moment for that."
+                        )
+                        await session.generate_reply(instructions=conclude_instructions)
+                        logger.info("✅ Sent conclude instruction to agent (~1 min left)")
+                        print("⏰ Conclude instruction sent (~1 min left)", flush=True)
+                    except Exception as e:
+                        logger.warning(f"⚠️  Could not send conclude instruction: {e}")
                 
                 # Trigger closing only when FULL duration reached (30 min or scheduled end) — not at 90%
                 trigger_closing_now = time_limit_reached and not closing_triggered

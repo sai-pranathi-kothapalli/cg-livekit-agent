@@ -34,14 +34,29 @@ class TimeContextLLMWrapper:
                     now = get_now_ist()
                     elapsed_minutes = (now - start_time).total_seconds() / 60
                     minutes_remaining = max(0, duration_minutes - elapsed_minutes)
-                    # Time context for pacing only; conclusion is triggered by backend at scheduled end.
-                    # Reinforce every turn: you must still ask questions; you must not stop; do not let the model decide to end.
-                    time_msg = (
-                        f"TIME REMAINING: {int(minutes_remaining)} minutes. Minute {int(elapsed_minutes)} of {duration_minutes}. "
-                        f"You MUST still ask questions. You MUST NOT stop or end the interview. Do NOT let the model decide to end — only the system can end. "
-                        f"Do NOT say goodbye, thank the candidate for their time, wish them luck, or say 'that is all' / 'we are done'. "
-                        f"Your only job: ask the NEXT question from the QUESTION BANK. One question only."
-                    )
+                    # In the last 2 minutes: inject wrapping-up / conclude so the agent actually says it every turn
+                    if minutes_remaining > 0 and minutes_remaining <= 1:
+                        time_msg = (
+                            f"TIME REMAINING: {int(minutes_remaining)} minute. Minute {int(elapsed_minutes)} of {duration_minutes}. "
+                            f"LAST MINUTE: You MUST say we are concluding in this response. "
+                            f"Say exactly something like: 'We have a minute left, so let us conclude.' or 'That brings us to the end.' "
+                            f"Do NOT ask any new question. One short sentence only. Do NOT say full goodbye yet (system will send that in a moment)."
+                        )
+                    elif minutes_remaining > 1 and minutes_remaining <= 2:
+                        time_msg = (
+                            f"TIME REMAINING: {int(minutes_remaining)} minutes. Minute {int(elapsed_minutes)} of {duration_minutes}. "
+                            f"LAST 2 MINUTES: You MUST say we are wrapping up in this response. "
+                            f"Say something like: 'We have a couple of minutes left.' or 'We are coming to the end.' "
+                            f"Then you may ask at most ONE final question from the bank. Do NOT say full goodbye yet."
+                        )
+                    else:
+                        # Normal: ask next question; do not conclude until system says so
+                        time_msg = (
+                            f"TIME REMAINING: {int(minutes_remaining)} minutes. Minute {int(elapsed_minutes)} of {duration_minutes}. "
+                            f"You MUST still ask questions. You MUST NOT stop or end the interview. Do NOT let the model decide to end — only the system can end. "
+                            f"Do NOT say goodbye, thank the candidate for their time, wish them luck, or say 'that is all' / 'we are done'. "
+                            f"Your only job: ask the NEXT question from the QUESTION BANK. One question only."
+                        )
                     chat_ctx.add_message(role="system", content=time_msg)
                     logger.debug(
                         f"⏰ Injected time context: {int(minutes_remaining)} min remaining (minute {int(elapsed_minutes)} of {duration_minutes})"
