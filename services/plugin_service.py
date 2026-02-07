@@ -205,14 +205,19 @@ class PluginService:
             # [OK] Inject current minute into chat context for pacing; conclusion triggered by backend at 90%
             from services.time_context_llm_wrapper import TimeContextLLMWrapper
             time_context_wrapper = TimeContextLLMWrapper(original_chat)
-            # Wrap with history management
+            # Wrap with history management (cost reduction: last N full + older as summary)
             history_wrapper = HistoryManagedLLMWrapper(
                 original_chat=time_context_wrapper,
                 transcript_service=transcript_service,
                 session_id=room.name,  # [OK] Pass room name as session_id
                 max_conversation_tokens=self.config.MAX_CONVERSATION_TOKENS,
                 max_messages=self.config.MAX_CONVERSATION_MESSAGES,
-                min_messages_to_keep=self.config.MIN_CONVERSATION_MESSAGES
+                min_messages_to_keep=self.config.MIN_CONVERSATION_MESSAGES,
+                recent_messages_to_keep_full=getattr(self.config, "RECENT_MESSAGES_TO_KEEP_FULL", 6),
+                max_summary_chars=getattr(self.config, "MAX_SUMMARY_CHARS", 800),
+                use_gemini_for_summary=getattr(self.config, "USE_GEMINI_FOR_HISTORY_SUMMARY", False),
+                gemini_api_key=getattr(self.config.gemini_llm, "api_key", None) if getattr(self.config, "USE_GEMINI_FOR_HISTORY_SUMMARY", False) else None,
+                gemini_model=getattr(self.config.gemini_llm, "model", "gemini-1.5-flash"),
             )
             
             # [OK] Add timing wrapper on top of history wrapper
@@ -220,7 +225,7 @@ class PluginService:
             
             llm_plugin.chat = timing_wrapper
             logger.info(
-                f"   [OK] LLM chat wrapped: time context, transcript, history, timing "
+                f"   [OK] LLM chat wrapped: time context, transcript, history (recent_full={getattr(self.config, 'RECENT_MESSAGES_TO_KEEP_FULL', 6)}, summary_chars={getattr(self.config, 'MAX_SUMMARY_CHARS', 800)}), timing "
                 f"(max_tokens={self.config.MAX_CONVERSATION_TOKENS}, "
                 f"max_messages={self.config.MAX_CONVERSATION_MESSAGES})"
             )

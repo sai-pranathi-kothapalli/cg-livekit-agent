@@ -88,8 +88,22 @@ class TimingContextWrapper:
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Exit and log total time"""
+        """Exit and log total time and token usage"""
         try:
+            # ✅ Token usage: output estimate (chars/3) and total with input from history wrapper
+            output_tokens_estimate = self._total_chars // 3
+            try:
+                from app.services.history_managed_llm_wrapper import get_last_llm_input_tokens_estimate
+                input_estimate = get_last_llm_input_tokens_estimate()
+                total_estimate = input_estimate + output_tokens_estimate
+                logger.info(
+                    "📊 [TOKENS] output_estimate=%s output_chars=%s | total_estimate=%s (input_estimate=%s + output_estimate)",
+                    output_tokens_estimate, self._total_chars, total_estimate, input_estimate,
+                )
+            except Exception as e:
+                logger.debug("Could not log full token estimate: %s", e)
+                logger.info("📊 [TOKENS] output_estimate=%s output_chars=%s", output_tokens_estimate, self._total_chars)
+            
             # ✅ END LLM TIMING
             if self._timer:
                 self._timer.end(f"{self._total_chars} chars generated")
@@ -142,13 +156,37 @@ class TimingContextWrapper:
             # Track chunk stats
             self._chunk_count += 1
             
-            # Try to extract text length
-            if hasattr(chunk, 'content'):
-                self._total_chars += len(chunk.content or "")
+            # Extract text length from various chunk shapes (LiveKit ChatChunk, Google GenAI, etc.)
+            chunk_text = ""
+            if hasattr(chunk, 'content') and isinstance(getattr(chunk, 'content'), str):
+                chunk_text = chunk.content or ""
             elif hasattr(chunk, 'text'):
-                self._total_chars += len(chunk.text or "")
+                chunk_text = chunk.text if isinstance(chunk.text, str) else ""
             elif isinstance(chunk, str):
-                self._total_chars += len(chunk)
+                chunk_text = chunk
+            elif getattr(chunk, 'choices', None):
+                # LiveKit ChatChunk: choices[0].delta.content
+                choices = chunk.choices
+                if choices and len(choices) > 0:
+                    delta = getattr(choices[0], 'delta', None)
+                    if delta and hasattr(delta, 'content') and delta.content:
+                        chunk_text = delta.content if isinstance(delta.content, str) else ""
+            elif getattr(chunk, 'parts', None):
+                # Google GenAI: parts[].text
+                for part in chunk.parts:
+                    if hasattr(part, 'text') and part.text:
+                        chunk_text += part.text if isinstance(part.text, str) else ""
+            elif getattr(chunk, 'candidates', None):
+                # Google GenAI GenerateContentResponse: candidates[0].content.parts[0].text
+                cands = chunk.candidates
+                if cands and len(cands) > 0:
+                    content = getattr(cands[0], 'content', None)
+                    if content and getattr(content, 'parts', None):
+                        for part in content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                chunk_text += part.text if isinstance(part.text, str) else ""
+            if chunk_text:
+                self._total_chars += len(chunk_text)
             
             return chunk
             

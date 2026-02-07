@@ -137,3 +137,6 @@ openpyxl==3.1.2
 
 # Password hashing for admin authentication
 bcrypt==5.0.0
+
+# MongoDB (for evaluation + booking status when worker uses backend app.db / app.services)
+pymongo>=4.0.0
