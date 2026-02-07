@@ -372,6 +372,8 @@ async def entrypoint(ctx: JobContext) -> None:
         agent_instructions = None
         if jd_data and jd_data.get("context"):
             agent_instructions = jd_data["context"].strip()
+            # Substitute placeholders from candidate profile (e.g. {name}, {full_name}, {email})
+            agent_instructions = _substitute_context_placeholders(agent_instructions, candidate_profile)
             logger.info("[OK] Using agent context from Job Description (admin)")
         if not agent_instructions:
             logger.info("[OK] No context in Job Description; using default agent instructions")
@@ -988,6 +990,32 @@ You may now conclude the interview. Politely conclude in 2–3 sentences: thank 
         print("=" * 60 + "\n", flush=True, file=sys.stderr)
         sys.stderr.flush()
         raise AgentError(f"Agent entrypoint failed: {str(e)}", "my-interviewer")
+
+
+def _substitute_context_placeholders(context: str, candidate_profile: Optional[dict]) -> str:
+    """
+    Replace placeholders in dashboard context with candidate profile values.
+    E.g. {name} or {full_name} -> candidate name, {email} -> email, etc.
+    Uses candidate_profile keys; {name} is aliased to full_name.
+    Unknown placeholders are left as-is.
+    """
+    if not context or not context.strip():
+        return context
+    subs = {}
+    if candidate_profile and isinstance(candidate_profile, dict):
+        for k, v in candidate_profile.items():
+            if k and isinstance(k, str):
+                subs[k] = str(v).strip() if v is not None else ""
+        # Alias: {name} -> full_name
+        if "full_name" in subs:
+            subs["name"] = subs["full_name"]
+        elif "full_name" in candidate_profile:
+            subs["name"] = str(candidate_profile["full_name"]).strip() if candidate_profile["full_name"] else ""
+    # Replace {key} with value for each key in subs
+    for key, value in subs.items():
+        if key:
+            context = context.replace("{" + key + "}", value)
+    return context
 
 
 async def _fetch_candidate_profile(room: rtc.Room, config: Config) -> Optional[dict]:
