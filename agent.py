@@ -21,6 +21,7 @@ if backend_path.exists() and str(backend_path) not in sys.path:
     print(f"[INFO] Backend path added: {backend_path}", flush=True)
 else:
     print(f"[WARNING] Backend not found at {_root / 'Livekit-Backend-agent-backend'} or {_root / 'backend'}", flush=True)
+    print(f"[WARNING] Run the worker from the project that contains 'backend/' (e.g. livekit2/worker not livekit/worker)", flush=True)
 
 # Try loading from different possible locations (backend .env has GEMINI_API_KEY etc.)
 root_env_path = _root / ".env.local"
@@ -36,6 +37,7 @@ elif root_env_path.exists():
     load_dotenv(root_env_path, override=True)
 else:
     print("[WARNING] No .env found in Livekit-Backend-agent-backend or .env.local - GEMINI_API_KEY may be missing!", flush=True)
+    print(f"[WARNING] Make sure you are in the correct project (e.g. cd livekit2/worker then python3 agent.py dev)", flush=True)
 
 # NOW import other modules (after backend path is set and environment is loaded)
 from agents.entrypoint import entrypoint

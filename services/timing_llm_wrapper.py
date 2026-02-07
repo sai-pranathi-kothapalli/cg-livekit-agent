@@ -50,6 +50,7 @@ class TimingContextWrapper:
         self._chunk_count = 0
         self._total_chars = 0
         self._tts_timer = None
+        self._token_logged = False  # avoid double log when both __anext__(StopAsyncIteration) and __aexit__ run
     
     async def __aenter__(self):
         """Enter the original context manager and start timing"""
@@ -90,19 +91,10 @@ class TimingContextWrapper:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit and log total time and token usage"""
         try:
-            # ✅ Token usage: output estimate (chars/3) and total with input from history wrapper
-            output_tokens_estimate = self._total_chars // 3
-            try:
-                from app.services.history_managed_llm_wrapper import get_last_llm_input_tokens_estimate
-                input_estimate = get_last_llm_input_tokens_estimate()
-                total_estimate = input_estimate + output_tokens_estimate
-                logger.info(
-                    "📊 [TOKENS] output_estimate=%s output_chars=%s | total_estimate=%s (input_estimate=%s + output_estimate)",
-                    output_tokens_estimate, self._total_chars, total_estimate, input_estimate,
-                )
-            except Exception as e:
-                logger.debug("Could not log full token estimate: %s", e)
-                logger.info("📊 [TOKENS] output_estimate=%s output_chars=%s", output_tokens_estimate, self._total_chars)
+            # ✅ Token usage (only if not already logged in __anext__ when stream ended)
+            if not self._token_logged:
+                self._log_token_usage()
+                self._token_logged = True
             
             # ✅ END LLM TIMING
             if self._timer:
@@ -137,6 +129,25 @@ class TimingContextWrapper:
         """Return self as async iterator"""
         return self
     
+    def _log_token_usage(self):
+        """Log token usage (called when stream ends so we never miss it)."""
+        output_tokens_estimate = self._total_chars // 3
+        try:
+            from app.services.history_managed_llm_wrapper import get_last_llm_input_tokens_estimate
+            input_estimate = get_last_llm_input_tokens_estimate()
+            total_estimate = input_estimate + output_tokens_estimate
+            msg = (
+                f"📊 [TOKENS] input_estimate={input_estimate} output_estimate={output_tokens_estimate} "
+                f"output_chars={self._total_chars} total_estimate={total_estimate}"
+            )
+        except Exception:
+            msg = f"📊 [TOKENS] output_estimate={output_tokens_estimate} output_chars={self._total_chars}"
+        logger.info(msg)
+        try:
+            print(msg, flush=True)
+        except Exception:
+            pass
+
     async def __anext__(self):
         """Iterate and track timing"""
         try:
@@ -158,32 +169,37 @@ class TimingContextWrapper:
             
             # Extract text length from various chunk shapes (LiveKit ChatChunk, Google GenAI, etc.)
             chunk_text = ""
-            if hasattr(chunk, 'content') and isinstance(getattr(chunk, 'content'), str):
+            # LiveKit ChatChunk (used by Gemini plugin): chunk.delta.content
+            delta = getattr(chunk, "delta", None)
+            if delta is not None and getattr(delta, "content", None):
+                c = delta.content
+                chunk_text = c if isinstance(c, str) else ""
+            elif hasattr(chunk, "content") and isinstance(getattr(chunk, "content"), str):
                 chunk_text = chunk.content or ""
-            elif hasattr(chunk, 'text'):
+            elif hasattr(chunk, "text"):
                 chunk_text = chunk.text if isinstance(chunk.text, str) else ""
             elif isinstance(chunk, str):
                 chunk_text = chunk
-            elif getattr(chunk, 'choices', None):
-                # LiveKit ChatChunk: choices[0].delta.content
+            elif getattr(chunk, "choices", None):
+                # OpenAI-style: choices[0].delta.content
                 choices = chunk.choices
                 if choices and len(choices) > 0:
-                    delta = getattr(choices[0], 'delta', None)
-                    if delta and hasattr(delta, 'content') and delta.content:
-                        chunk_text = delta.content if isinstance(delta.content, str) else ""
-            elif getattr(chunk, 'parts', None):
+                    d = getattr(choices[0], "delta", None)
+                    if d and hasattr(d, "content") and d.content:
+                        chunk_text = d.content if isinstance(d.content, str) else ""
+            elif getattr(chunk, "parts", None):
                 # Google GenAI: parts[].text
                 for part in chunk.parts:
-                    if hasattr(part, 'text') and part.text:
+                    if hasattr(part, "text") and part.text:
                         chunk_text += part.text if isinstance(part.text, str) else ""
-            elif getattr(chunk, 'candidates', None):
+            elif getattr(chunk, "candidates", None):
                 # Google GenAI GenerateContentResponse: candidates[0].content.parts[0].text
                 cands = chunk.candidates
                 if cands and len(cands) > 0:
-                    content = getattr(cands[0], 'content', None)
-                    if content and getattr(content, 'parts', None):
+                    content = getattr(cands[0], "content", None)
+                    if content and getattr(content, "parts", None):
                         for part in content.parts:
-                            if hasattr(part, 'text') and part.text:
+                            if hasattr(part, "text") and part.text:
                                 chunk_text += part.text if isinstance(part.text, str) else ""
             if chunk_text:
                 self._total_chars += len(chunk_text)
@@ -191,6 +207,12 @@ class TimingContextWrapper:
             return chunk
             
         except StopAsyncIteration:
+            # Log tokens when stream ends (LiveKit may not call __aexit__, so we log here too)
+            self._log_token_usage()
+            self._token_logged = True
+            if self._timer:
+                self._timer.end(f"{self._total_chars} chars generated")
+                logger.info(f"    📊 Streamed {self._chunk_count} chunks")
             raise
         except Exception as e:
             logger.error(f"⚠️  Error in timing wrapper __anext__: {e}", exc_info=True)
