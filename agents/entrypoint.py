@@ -11,7 +11,7 @@ import logging
 import sys
 import os
 import time
-from typing import Optional
+from typing import Optional, Any, Dict, List
 from datetime import datetime, timedelta
 
 from livekit import agents, rtc
@@ -104,7 +104,6 @@ async def entrypoint(ctx: JobContext) -> None:
                 booking_token = room_name
             # Try room metadata
             if not booking_token and hasattr(ctx.room, 'metadata') and ctx.room.metadata:
-                import json
                 metadata = json.loads(ctx.room.metadata)
                 booking_token = metadata.get('booking_token') or metadata.get('token')
         except Exception as e:
@@ -841,131 +840,27 @@ You may now conclude the interview. Politely conclude in 2–3 sentences: thank 
                     await asyncio.sleep(1)  # Check every second when < 1 minute remaining
                 else:
                     await asyncio.sleep(5)  # Check every 5 seconds otherwise
-                
-                # Every 10 seconds, log session state
-                if time.time() - last_health_check >= 10:
-                    health_msg = f"💓 Session check - agent_state: {session.agent_state}, user_state: {session.user_state}"
-                    logger.info(health_msg)
-                    print(health_msg, flush=True)
-                    room_status = f"   Room connected: {ctx.room.isconnected()}, participants: {len(ctx.room.remote_participants)}"
-                    logger.info(room_status)
-                    print(room_status, flush=True)
-                    if session.current_speech:
-                        speech_msg = f"   Current speech active: {session.current_speech is not None}"
-                        logger.info(speech_msg)
-                        print(speech_msg, flush=True)
-                    last_health_check = time.time()
-                
-                # Periodic health check
-                current_time = time.time()
-                if current_time - last_health_check >= 30:  # Every 30 seconds
-                    elapsed = time.time() - session_start_time
-                    participant_count = len(ctx.room.remote_participants)
-                    
-                    # Show time remaining if limit is set
-                    time_remaining = ""
-                    if scheduled_end_time:
-                        remaining = (scheduled_end_time - current_time_ist).total_seconds() / 60
-                        if remaining > 0:
-                            time_remaining = f", {remaining:.1f} min remaining"
-                    elif interview_duration_minutes:
-                        remaining = interview_duration_minutes - elapsed_minutes
-                        if remaining > 0:
-                            time_remaining = f", {remaining:.1f} min remaining"
-                    
-                    health_summary = (
-                        f"💓 Session health: {elapsed/60:.1f} min elapsed{time_remaining}, "
-                        f"{participant_count} participants, "
-                        f"room connected: {ctx.room.isconnected()}"
-                    )
-                    logger.info(health_summary)
-                    print(health_summary, flush=True)
-                    last_health_check = current_time
-                    
-                    # Reset error counter on successful health check
-                    consecutive_errors = 0
-                    
-        except KeyboardInterrupt:
-            logger.info("🛑 Agent shutdown requested")
-            print("\n🛑 Agent shutdown requested", flush=True)
-            raise
-        except Exception as e:
-            consecutive_errors += 1
-            elapsed = time.time() - session_start_time
-            error_msg = f"[ERR] Loop Error (consecutive: {consecutive_errors}/{max_consecutive_errors}): {e}"
-            logger.error(error_msg, exc_info=True)
-            print(error_msg, flush=True)
-            print(f"   Session duration: {elapsed/60:.1f} minutes", flush=True)
-            print(f"   Error type: {type(e).__name__}", flush=True)
-            
-            # Only stop if too many consecutive errors
-            if consecutive_errors >= max_consecutive_errors:
-                stop_msg = "[ERR] Too many consecutive errors, stopping session"
-                logger.error(stop_msg)
-                print(stop_msg, flush=True)
-                raise
-            else:
-                # Continue running despite error
-                continue_msg = "[WARN]  Continuing session despite error"
-                logger.warning(continue_msg)
-                print(continue_msg, flush=True)
-                await asyncio.sleep(5)  # Brief pause before continuing
-        
-        # Step 7: Update booking status and create evaluation after interview completes
-        logger.info("Step 7: Finalizing interview...")
-        print("Step 7: Finalizing interview...", flush=True)
-        
-        # Update booking status to completed if not already done
-        if booking_token:
-            try:
-                from app.services.booking_service import BookingService  # type: ignore
-                booking_service = BookingService(config)
-                booking_service.update_booking_status(booking_token, "completed")
-                logger.info(f"✅ Updated booking status to 'completed'")
-            except Exception as e:
-                logger.warning(f"⚠️  Failed to update booking status: {e}")
-        
-        # Create evaluation
-        logger.info("Step 7b: Creating interview evaluation...")
-        print("Step 7b: Creating interview evaluation...", flush=True)
-        try:
-            if booking_token:
-                from app.services.evaluation_service import EvaluationService  # type: ignore
-                from app.services.transcript_storage_service import TranscriptStorageService  # type: ignore
-                
-                evaluation_service = EvaluationService(config)
-                transcript_service = TranscriptStorageService(config)
-                
-                # Get transcript
-                transcript = transcript_service.get_transcript(booking_token)
-                
-                # Calculate duration
-                duration_minutes = None
-                if interview_start_time:
-                    duration_minutes = int((get_now_ist() - interview_start_time).total_seconds() / 60)
-                
-                # Create evaluation
-                evaluation_id = evaluation_service.calculate_evaluation_from_transcript(
-                    booking_token=booking_token,
-                    room_name=room_name,
-                    transcript=transcript,
-                )
-                
-                if evaluation_id:
-                    logger.info(f"✅ Evaluation created: {evaluation_id}")
-                    print(f"✅ Evaluation created: {evaluation_id}", flush=True)
-                else:
-                    logger.warning("⚠️  Failed to create evaluation")
-            else:
-                logger.warning("⚠️  No booking token available, skipping evaluation creation")
-        except Exception as e:
-            logger.warning(f"⚠️  Error creating evaluation: {e}", exc_info=True)
-            print(f"⚠️  Error creating evaluation: {e}", flush=True)
-        
+        finally:
+            # Step 7: Update booking status and create evaluation after interview completes
+            # This runs even if the loop breaks or an exception (including CancelledError) occurs
+            await _finalize_interview(
+                booking_token=booking_token,
+                room_name=room_name,
+                interview_start_time=interview_start_time,
+                plugins=plugins,
+                config=config
+            )
+
         logger.info("=" * 60)
         logger.info("[OK] Entrypoint Finished Successfully")
         logger.info("=" * 60)
         
+        # Wait for any pending tasks
+        await asyncio.sleep(0.5)
+
+    except asyncio.CancelledError:
+        logger.warning("🛑 Agent task cancelled (room probably closed)")
+        print("🛑 Agent task cancelled", flush=True)
     except Exception as e:
         error_msg = f"[ERR] Critical error in agent entrypoint: {e}"
         
@@ -1024,6 +919,81 @@ def _substitute_context_placeholders(context: str, candidate_profile: Optional[d
         if key:
             context = context.replace("{" + key + "}", value)
     return context
+
+
+async def _finalize_interview(
+    booking_token: Optional[str],
+    room_name: str,
+    interview_start_time: Any,
+    plugins: Dict[str, Any],
+    config: Any
+) -> None:
+    """
+    Finalize interview: update status and create evaluation.
+    This is called in a finally block to ensure it always runs.
+    """
+    # Step 7: Update booking status and create evaluation after interview completes
+    logger.info("Step 7: Finalizing interview...")
+    print("Step 7: Finalizing interview...", flush=True)
+    
+    # Update booking status to completed if not already done
+    if booking_token:
+        try:
+            from app.services.booking_service import BookingService  # type: ignore
+            booking_service = BookingService(config)
+            booking_service.update_booking_status(booking_token, "completed")
+            logger.info(f"✅ [FINALIZE] Updated booking status to 'completed'")
+        except Exception as e:
+            logger.warning(f"⚠️  [FINALIZE] Failed to update booking status: {e}")
+    
+    # Create evaluation
+    logger.info("Step 7b: Creating interview evaluation...")
+    print("Step 7b: Creating interview evaluation...", flush=True)
+    try:
+        if booking_token:
+            from app.services.evaluation_service import EvaluationService  # type: ignore
+            from app.services.transcript_storage_service import TranscriptStorageService  # type: ignore
+            
+            evaluation_service = EvaluationService(config)
+            transcript_service = TranscriptStorageService(config)
+            
+            # Get transcript
+            transcript = transcript_service.get_transcript(booking_token)
+            
+            # Calculate duration
+            duration_minutes = None
+            if interview_start_time:
+                duration_minutes = int((get_now_ist() - interview_start_time).total_seconds() / 60)
+            
+            # Extract token usage from LLM timing wrapper
+            token_usage = None
+            try:
+                if "llm" in plugins and hasattr(plugins["llm"], "chat") and hasattr(plugins["llm"].chat, "get_total_usage"):
+                    token_usage = plugins["llm"].chat.get_total_usage()
+                    logger.info(f"📊 [TOTAL TOKENS] {token_usage}")
+                else:
+                    logger.warning(f"⚠️  [FINALIZE] Token usage not found in plugins['llm'].chat! type={type(plugins.get('llm'))}")
+            except Exception as e:
+                logger.warning(f"⚠️  [FINALIZE] Failed to extract token usage: {e}")
+
+            # Create evaluation
+            evaluation_id = evaluation_service.calculate_evaluation_from_transcript(
+                booking_token=booking_token,
+                room_name=room_name,
+                transcript=transcript,
+                token_usage=token_usage,
+            )
+            
+            if evaluation_id:
+                logger.info(f"✅ [FINALIZE] Evaluation created: {evaluation_id}")
+                print(f"✅ [FINALIZE] Evaluation created: {evaluation_id}", flush=True)
+            else:
+                logger.warning("⚠️  [FINALIZE] Failed to create evaluation")
+        else:
+            logger.warning("⚠️  [FINALIZE] No booking token available, skipping evaluation creation")
+    except Exception as e:
+        logger.warning(f"⚠️  [FINALIZE] Error creating evaluation: {e}", exc_info=True)
+        print(f"⚠️  [FINALIZE] Error creating evaluation: {e}", flush=True)
 
 
 async def _fetch_candidate_profile(

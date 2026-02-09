@@ -25,6 +25,8 @@ class TimingLLMWrapper:
             original_chat: Original LLM chat method (already wrapped by history manager)
         """
         self._original_chat = original_chat
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
         logger.info("TimingLLMWrapper initialized")
     
     def __call__(self, *args, **kwargs) -> "TimingContextWrapper":
@@ -32,8 +34,23 @@ class TimingLLMWrapper:
         Call wrapper - intercepts LLM chat calls and adds timing.
         """
         return TimingContextWrapper(
-            self._original_chat(*args, **kwargs)
+            self._original_chat(*args, **kwargs),
+            self
         )
+
+    def aggregate_usage(self, input_tokens: int, output_tokens: int):
+        """Aggregate usage from a single LLM call"""
+        self._total_input_tokens += input_tokens
+        self._total_output_tokens += output_tokens
+        logger.debug(f"📊 [AGGREGATE TOKENS] session_total: input={self._total_input_tokens} output={self._total_output_tokens}")
+
+    def get_total_usage(self):
+        """Get total usage for the session"""
+        return {
+            "input_tokens": self._total_input_tokens,
+            "output_tokens": self._total_output_tokens,
+            "total_tokens": self._total_input_tokens + self._total_output_tokens
+        }
 
 
 class TimingContextWrapper:
@@ -42,8 +59,9 @@ class TimingContextWrapper:
     # Class variable to track turn start time
     _turn_start_time = None
     
-    def __init__(self, original_cm: AsyncContextManager):
+    def __init__(self, original_cm: AsyncContextManager, parent: TimingLLMWrapper = None):
         self._cm = original_cm
+        self._parent = parent
         self._timer = None
         self._conversation_id = None
         self._first_chunk = False
@@ -142,7 +160,20 @@ class TimingContextWrapper:
             )
         except Exception:
             msg = f"📊 [TOKENS] output_estimate={output_tokens_estimate} output_chars={self._total_chars}"
+        
         logger.info(msg)
+        
+        # Aggregate usage back to the parent TimingLLMWrapper
+        if self._parent:
+            try:
+                # We use estimates for now as Gemini stream chunks don't always contain usageMetadata
+                # If we had real usageMetadata from chunk.usage_metadata, we'd use it here.
+                input_count = input_estimate if 'input_estimate' in locals() else 0
+                output_count = output_tokens_estimate
+                self._parent.aggregate_usage(input_count, output_count)
+            except Exception as e:
+                logger.warning(f"Failed to aggregate token usage: {e}")
+
         try:
             print(msg, flush=True)
         except Exception:
