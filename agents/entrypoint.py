@@ -168,10 +168,10 @@ async def entrypoint(ctx: JobContext) -> None:
             print(warning_msg, flush=True)
             room_sid = "N/A"
         
-        # Step 2: Fetch structured application data from Supabase
+        # Step 2: Fetch candidate application form from DB (for {full_name}, {email}, etc. in context)
         logger.info("Step 2: Fetching Candidate Application Data...")
         print("Step 2: Fetching Candidate Application Data...", flush=True)
-        candidate_profile = await _fetch_candidate_profile(ctx.room, config)  # Returns None if service unavailable
+        candidate_profile = await _fetch_candidate_profile(ctx.room, config, booking_token=booking_token)
         
         # Step 2b: Fetch Job Description
         logger.info("Step 2b: Fetching Job Description...")
@@ -181,8 +181,12 @@ async def entrypoint(ctx: JobContext) -> None:
             try:
                 jd_service = JobDescriptionService(config)
                 jd_data = jd_service.get_job_description()
-                logger.info("[OK] Step 2b: Job description fetched successfully")
-                print("[OK] Step 2b: Job description fetched successfully", flush=True)
+                ctx_len = len((jd_data or {}).get("context") or "")
+                logger.info(f"[OK] Step 2b: Job description fetched successfully (context length={ctx_len})")
+                print(f"[OK] Step 2b: Job description fetched (context length={ctx_len})", flush=True)
+                if ctx_len == 0:
+                    logger.warning("[WARN] Step 2b: Job description context is empty — agent will use default instructions. Save context in Admin JD Editor if you expect custom instructions.")
+                    print("[WARN] Job description context is empty — save context in Admin JD Editor (Interview / Agent Context).", flush=True)
             except Exception as e:
                 warning_msg = f"[WARN]  Step 2b: Failed to fetch job description: {e}"
                 logger.warning(warning_msg)
@@ -374,9 +378,14 @@ async def entrypoint(ctx: JobContext) -> None:
             agent_instructions = jd_data["context"].strip()
             # Substitute placeholders from candidate profile (e.g. {name}, {full_name}, {email})
             agent_instructions = _substitute_context_placeholders(agent_instructions, candidate_profile)
-            logger.info("[OK] Using agent context from Job Description (admin)")
+            preview = (agent_instructions[:120] + "…") if len(agent_instructions) > 120 else agent_instructions
+            logger.info(
+                f"[OK] Using agent context from Job Description (admin), length={len(agent_instructions)}, preview: {preview!r}"
+            )
+            print(f"[OK] Agent context from DB: length={len(agent_instructions)}, preview: {preview[:80]}...", flush=True)
         if not agent_instructions:
             logger.info("[OK] No context in Job Description; using default agent instructions")
+            print("[OK] No context in Job Description; using default agent instructions", flush=True)
             
         try:
             agent = ProfessionalArjun(
@@ -552,21 +561,16 @@ async def entrypoint(ctx: JobContext) -> None:
                 logger.info("   Calling session.generate_reply() for greeting...")
                 print("   Calling session.generate_reply() for greeting...")
                 
-                # Add timeout to prevent hanging
+                # Add timeout to prevent hanging. Use job description context only — no hardcoded intro.
                 try:
+                    greeting_instruction = (
+                        "Start the interview with your opening as defined in your role and instructions above. "
+                        "Give a brief, professional greeting (introduce yourself and the interview topic as per your context), "
+                        "then ask exactly ONE simple opening question (e.g. about themselves or background). "
+                        "Keep it short. Do not use brackets in your speech. Wait for their response before continuing."
+                    )
                     await asyncio.wait_for(
-                        session.generate_reply(
-                            instructions="""
-                            As Alyza, start the interview with a professional, welcoming opening:
-                            - Introduce yourself warmly: "Hello! I am Alyza, a professional Banking Interviewer." (Ensure NO brackets are used).
-                           
-                            - Ask ONLY ONE simple question: "To begin, could you please tell me a bit about yourself and your educational background?"
-                            - Keep it professional, clear, and encouraging - maintain a formal yet approachable tone.
-                            - Show genuine interest in their learning journey.
-                            - Make them feel comfortable and supported.
-                            - CRITICAL: Ask only ONE question. Wait for their response before asking about interests or projects.
-                            """
-                        ),
+                        session.generate_reply(instructions=greeting_instruction),
                         timeout=60.0  # 60 second timeout for greeting generation
                     )
                 except asyncio.TimeoutError:
@@ -1004,8 +1008,12 @@ def _substitute_context_placeholders(context: str, candidate_profile: Optional[d
     subs = {}
     if candidate_profile and isinstance(candidate_profile, dict):
         for k, v in candidate_profile.items():
-            if k and isinstance(k, str):
-                subs[k] = str(v).strip() if v is not None else ""
+            if k and isinstance(k, str) and k != "_id":
+                val = str(v).strip() if v is not None else ""
+                # Skip substituting internal "id" (MongoDB doc id) so we don't leak it into speech
+                if k == "id" and len(val) == 24 and val.isalnum():
+                    continue
+                subs[k] = val
         # Alias: {name} -> full_name
         if "full_name" in subs:
             subs["name"] = subs["full_name"]
@@ -1018,46 +1026,68 @@ def _substitute_context_placeholders(context: str, candidate_profile: Optional[d
     return context
 
 
-async def _fetch_candidate_profile(room: rtc.Room, config: Config) -> Optional[dict]:
+async def _fetch_candidate_profile(
+    room: rtc.Room, config: Config, booking_token: Optional[str] = None
+) -> Optional[dict]:
     """
-    Fetch candidate application profile from Supabase using metadata ID.
-    
+    Fetch candidate application profile from MongoDB student_application_forms.
+    Used to replace placeholders like {full_name}, {email}, {aadhaar_number} in agent context.
+
+    Flow: booking_token -> interview_bookings (get user_id) -> student_application_forms (get form by user_id).
+
     Args:
-        room: LiveKit room instance
+        room: LiveKit room instance (used for metadata fallback)
         config: App config
-        
+        booking_token: From room name (interview_<token>) or room metadata
+
     Returns:
-        Structured dictionary of application data or None
+        Flat dict of application form fields (full_name, email, etc.) or None
     """
     try:
+        user_id = None
+
+        # 1) Prefer booking_token: get user_id from interview_bookings, then form from student_application_forms
+        if booking_token:
+            try:
+                from app.services.booking_service import BookingService  # type: ignore
+                from app.services.application_form_service import ApplicationFormService  # type: ignore
+                booking_service = BookingService(config)
+                form_service = ApplicationFormService(config)
+                booking = booking_service.get_booking(booking_token)
+                if booking and booking.get("user_id"):
+                    user_id = str(booking["user_id"]).strip()
+                    form = form_service.get_form_by_user_id(user_id)
+                    if form:
+                        logger.info(f"[OK] Candidate profile from student_application_forms (user_id={user_id}, full_name={form.get('full_name', '')})")
+                        print(f"[OK] Candidate profile loaded for placeholders (e.g. {{full_name}})", flush=True)
+                        return form
+                    logger.debug(f"No application form for user_id={user_id}")
+            except ImportError as e:
+                logger.debug(f"Services not available: {e}")
+            except Exception as e:
+                logger.warning(f"[WARN]  Fetch candidate profile via booking: {e}")
+
+        # 2) Fallback: user_id or form_id from room metadata
         if hasattr(room, 'metadata') and room.metadata:
             try:
                 metadata = json.loads(room.metadata)
-                
-                # Check for identifiers in metadata
-                form_id = metadata.get('application_form_id') or metadata.get('application_id')
-                user_id = metadata.get('user_id') or metadata.get('userId')
-                
-                # ApplicationFormService not available in current backend
-                # form_service = ApplicationFormService(config)
-                
-                if form_id:
-                    logger.info(f"[DEBUG] Application Form ID found: {form_id} (service not available)")
-                    # return form_service.get_form_by_id(form_id)
-                elif user_id:
-                    logger.info(f"[DEBUG] User ID found: {user_id} (service not available)")
-                    # return form_service.get_form_by_user_id(user_id)
-                else:
-                    logger.warning("[WARN]  No 'application_form_id' or 'user_id' found in room metadata")
-                    
-            except json.JSONDecodeError:
-                logger.warning("[WARN]  Could not parse room metadata as JSON")
-        else:
-            logger.info("📄 APPLICATION STATUS: No metadata found in room")
-            
+                user_id = user_id or metadata.get('user_id') or metadata.get('userId')
+                if user_id:
+                    from app.services.application_form_service import ApplicationFormService  # type: ignore
+                    form_service = ApplicationFormService(config)
+                    form = form_service.get_form_by_user_id(str(user_id))
+                    if form:
+                        logger.info(f"[OK] Candidate profile from metadata user_id={user_id}")
+                        return form
+            except (json.JSONDecodeError, ImportError):
+                pass
+            except Exception as e:
+                logger.warning(f"[WARN]  Fetch candidate profile from metadata: {e}")
+
+        if not user_id:
+            logger.info("📄 No booking_token or user_id — placeholders like {full_name} will not be replaced")
     except Exception as e:
         logger.warning(f"[WARN]  Error fetching candidate profile: {e}")
-    
     return None
 
 
