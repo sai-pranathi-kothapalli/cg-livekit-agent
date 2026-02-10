@@ -216,6 +216,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # Step 4: Initialize plugins
         logger.info("Step 4: Initializing Plugins (STT, LLM, TTS)...")
         print("Step 4: Initializing Plugins (STT, LLM, TTS)...", flush=True)
+        plugins = {}
         try:
             plugin_service = PluginService(config)
             plugins = await plugin_service.initialize_plugins(
@@ -966,15 +967,38 @@ async def _finalize_interview(
                 duration_minutes = int((get_now_ist() - interview_start_time).total_seconds() / 60)
             
             # Extract token usage from LLM timing wrapper
+            # Extract token usage from LLM timing wrapper
             token_usage = None
             try:
-                if "llm" in plugins and hasattr(plugins["llm"], "chat") and hasattr(plugins["llm"].chat, "get_total_usage"):
-                    token_usage = plugins["llm"].chat.get_total_usage()
-                    logger.info(f"📊 [TOTAL TOKENS] {token_usage}")
+                llm = plugins.get("llm") if plugins else None
+                if llm:
+                    llm_type = type(llm).__name__
+                    logger.info(f"📊 [FINALIZE] Extracting usage from LLM type: {llm_type}")
+                    
+                    # 1. Check for wrapped chat (TimingLLMWrapper) on .chat attribute
+                    if hasattr(llm, "chat") and hasattr(llm.chat, "get_total_usage"):
+                        token_usage = llm.chat.get_total_usage()
+                        logger.info(f"📊 [FINALIZE] Token usage from llm.chat: {token_usage}")
+                    
+                    # 2. Fallback: Check if the LLM object itself has get_total_usage (e.g. if it is the wrapper itself)
+                    elif hasattr(llm, "get_total_usage"):
+                        token_usage = llm.get_total_usage()
+                        logger.info(f"📊 [FINALIZE] Token usage from llm object: {token_usage}")
+                        
+                    # 3. Fallback: If it's a FallbackLLM, check its internal state or wrapped components if possible
+                    # (Note: FallbackLLM typically exposes .chat which is wrapped, so #1 should catch it)
+                    
+                    if not token_usage:
+                        # Debug info if usage is still missing
+                        chat_attr = getattr(llm, "chat", None)
+                        chat_type = type(chat_attr).__name__ if chat_attr else "None"
+                        chat_dir = dir(chat_attr) if chat_attr else []
+                        logger.warning(f"⚠️  [FINALIZE] Token usage NOT found! llm_type={llm_type}, chat_type={chat_type}")
+                        logger.debug(f"    llm.chat dir: {chat_dir}")
                 else:
-                    logger.warning(f"⚠️  [FINALIZE] Token usage not found in plugins['llm'].chat! type={type(plugins.get('llm'))}")
+                    logger.warning(f"⚠️  [FINALIZE] LLM plugin not found in plugins dict (keys={list(plugins.keys()) if plugins else 'None'})")
             except Exception as e:
-                logger.warning(f"⚠️  [FINALIZE] Failed to extract token usage: {e}")
+                logger.warning(f"⚠️  [FINALIZE] Failed to extract token usage: {e}", exc_info=True)
 
             # Create evaluation
             evaluation_id = evaluation_service.calculate_evaluation_from_transcript(
