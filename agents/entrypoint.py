@@ -172,29 +172,38 @@ async def entrypoint(ctx: JobContext) -> None:
         print("Step 2: Fetching Candidate Application Data...", flush=True)
         candidate_profile = await _fetch_candidate_profile(ctx.room, config, booking_token=booking_token)
         
-        # Step 2b: Fetch Job Description
-        logger.info("Step 2b: Fetching Job Description...")
-        print("Step 2b: Fetching Job Description...", flush=True)
-        jd_data = None
-        if JobDescriptionService:
-            try:
-                jd_service = JobDescriptionService(config)
-                jd_data = jd_service.get_job_description()
-                ctx_len = len((jd_data or {}).get("context") or "")
-                logger.info(f"[OK] Step 2b: Job description fetched successfully (context length={ctx_len})")
-                print(f"[OK] Step 2b: Job description fetched (context length={ctx_len})", flush=True)
-                if ctx_len == 0:
-                    logger.warning("[WARN] Step 2b: Job description context is empty — agent will use default instructions. Save context in Admin JD Editor if you expect custom instructions.")
-                    print("[WARN] Job description context is empty — save context in Admin JD Editor (Interview / Agent Context).", flush=True)
-            except Exception as e:
-                warning_msg = f"[WARN]  Step 2b: Failed to fetch job description: {e}"
-                logger.warning(warning_msg)
-                print(warning_msg, flush=True)
-                jd_data = None
-        else:
-            logger.warning("[WARN]  Step 2b: JobDescriptionService not available")
-            print("[WARN]  Step 2b: JobDescriptionService not available", flush=True)
+        # Step 2b: Fetch System Instructions & Booking Prompt
+        logger.info("Step 2b: Fetching System Instructions & Booking Prompt...")
+        print("Step 2b: Fetching System Instructions & Booking Prompt...", flush=True)
         
+        system_instructions = ""
+        booking_prompt = ""
+        
+        # 1. Get Global System Instructions
+        try:
+            from app.services.system_instructions_service import SystemInstructionsService
+            si_service = SystemInstructionsService(config)
+            si_data = si_service.get_system_instructions()
+            system_instructions = si_data.get("instructions", "")
+            logger.info(f"[OK] System instructions fetched (length={len(system_instructions)})")
+        except Exception as e:
+            logger.warning(f"[WARN] Failed to fetch system instructions: {e}")
+            print(f"[WARN] Failed to fetch system instructions: {e}", flush=True)
+
+        # 2. Get Booking Specific Prompt
+        if booking_token:
+            try: 
+                # Re-use booking service if possible, or create new
+                from app.services.booking_service import BookingService
+                booking_service = BookingService(config)
+                booking = booking_service.get_booking(booking_token)
+                if booking and booking.get("prompt"):
+                    booking_prompt = booking.get("prompt")
+                    logger.info(f"[OK] Found custom prompt for this interview (length={len(booking_prompt)})")
+                    print(f"[OK] Found custom prompt for this interview", flush=True)
+            except Exception as e:
+                logger.warning(f"[WARN] Failed to fetch booking prompt: {e}")
+
         # Step 3: Setup participant event handlers
         logger.info("Step 3: Setting up participant event handlers...")
         print("Step 3: Setting up participant event handlers...", flush=True)
@@ -372,25 +381,35 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("Step 6: Starting session...")
         print("Step 6: Starting session...", flush=True)
         
-        # Agent context comes from Job Description (admin dashboard). Single 'context' field in DB.
-        agent_instructions = None
-        if jd_data and jd_data.get("context"):
-            agent_instructions = jd_data["context"].strip()
-            # Substitute placeholders from candidate profile (e.g. {name}, {full_name}, {email})
-            agent_instructions = _substitute_context_placeholders(agent_instructions, candidate_profile)
-            preview = (agent_instructions[:120] + "…") if len(agent_instructions) > 120 else agent_instructions
-            logger.info(
-                f"[OK] Using agent context from Job Description (admin), length={len(agent_instructions)}, preview: {preview!r}"
-            )
-            print(f"[OK] Agent context from DB: length={len(agent_instructions)}, preview: {preview[:80]}...", flush=True)
+        # Assemble Agent Instructions
+        agent_instructions = system_instructions or ""
+        
+        if booking_prompt:
+             agent_instructions += f"\n\nIMPORTANT INTERVIEW INSTRUCTIONS FROM RECRUITER:\n{booking_prompt}"
+             
         if not agent_instructions:
-            logger.info("[OK] No context in Job Description; using default agent instructions")
-            print("[OK] No context in Job Description; using default agent instructions", flush=True)
+             logger.info("[INFO] No custom instructions or prompt found - using Agent defaults")
+        
+        # Substitute placeholders (e.g. {name}, {full_name}, {email}) from candidate profile
+        if agent_instructions:
+            try:
+                # Need to define this helper function if not already available, or just implement inline
+                # Assuming _substitute_context_placeholders is available in this file or imported
+                if "substitute_context_placeholders" in globals() or "_substitute_context_placeholders" in globals():
+                     substitute_func = globals().get("_substitute_context_placeholders") or globals().get("substitute_context_placeholders")
+                     if substitute_func:
+                         agent_instructions = substitute_func(agent_instructions, candidate_profile)
+            except Exception as e:
+                logger.warning(f"Failed to substitute placeholders: {e}")
+
+            preview = (agent_instructions[:120] + "…") if len(agent_instructions) > 120 else agent_instructions
+            logger.info(f"[OK] Agent context prepared, length={len(agent_instructions)}, preview: {preview!r}")
+            print(f"[OK] Agent context prepared: length={len(agent_instructions)}", flush=True)
             
         try:
             agent = ProfessionalArjun(
                 candidate_profile=candidate_profile,
-                job_description=None,  # Context is in base_instructions from JD; no separate JD section
+                job_description=None,  # Deprecated
                 base_instructions=agent_instructions or None,
                 duration_minutes=interview_duration_minutes
             )
@@ -915,6 +934,13 @@ def _substitute_context_placeholders(context: str, candidate_profile: Optional[d
             subs["name"] = subs["full_name"]
         elif "full_name" in candidate_profile:
             subs["name"] = str(candidate_profile["full_name"]).strip() if candidate_profile["full_name"] else ""
+            
+        # Format list-based fields for better prompt injection
+        if isinstance(candidate_profile.get("skills"), list):
+            subs["skills"] = ", ".join(candidate_profile["skills"])
+        if isinstance(candidate_profile.get("projects"), list):
+            subs["projects"] = "\n- ".join([""] + candidate_profile["projects"])
+            
     # Replace {key} with value for each key in subs
     for key, value in subs.items():
         if key:
