@@ -909,6 +909,15 @@ You may now conclude the interview. Politely conclude in 2–3 sentences: thank 
         print("=" * 60 + "\n", flush=True, file=sys.stderr)
         sys.stderr.flush()
         raise AgentError(f"Agent entrypoint failed: {str(e)}", "my-interviewer")
+    finally:
+        # Cleanup active room tracking
+        try:
+            from agent import ACTIVE_ROOMS
+            if ctx.room.name in ACTIVE_ROOMS:
+                ACTIVE_ROOMS.remove(ctx.room.name)
+                logger.info(f"🧹 Cleaned up active room tracking for {ctx.room.name}")
+        except Exception:
+            pass
 
 
 def _substitute_context_placeholders(context: str, candidate_profile: Optional[dict]) -> str:
@@ -1373,4 +1382,3 @@ if __name__ == "__main__":
         entrypoint_fnc=entrypoint,
         agent_name=config.livekit.agent_name,
     ))
-
