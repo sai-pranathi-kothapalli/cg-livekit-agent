@@ -34,28 +34,38 @@ class TimeContextLLMWrapper:
                     now = get_now_ist()
                     elapsed_minutes = (now - start_time).total_seconds() / 60
                     minutes_remaining = max(0, duration_minutes - elapsed_minutes)
-                    # In the last 2 minutes: inject wrapping-up / conclude so the agent actually says it every turn
-                    if minutes_remaining > 0 and minutes_remaining <= 1:
+                    # In the last 5 minutes: inject wrapping-up / conclude instructions so the agent handles the ending properly
+                    if minutes_remaining > 0 and minutes_remaining <= 2:
                         time_msg = (
-                            f"TIME REMAINING: {int(minutes_remaining)} minute. Minute {int(elapsed_minutes)} of {duration_minutes}. "
-                            f"LAST MINUTE: You MUST say we are concluding in this response. "
-                            f"Say exactly something like: 'We have a minute left, so let us conclude.' or 'That brings us to the end.' "
-                            f"Do NOT ask any new question. One short sentence only. Do NOT say full goodbye yet (system will send that in a moment)."
+                            f"⏰ TIME ALERT: ONLY {int(minutes_remaining)} MINUTES REMAINING (minute {int(elapsed_minutes)} of {duration_minutes}).\n\n"
+                            f"INSTRUCTION - CONCLUDE NOW:\n"
+                            f"• You MUST announce we are concluding in this response\n"
+                            f"• Say exactly: 'We have about {int(minutes_remaining)} minute(s) left, so let us conclude.' or 'That brings us to the end.'\n"
+                            f"• Do NOT ask any new questions\n"
+                            f"• One short sentence only\n"
+                            f"• Do NOT say full goodbye yet (system will send that in a moment)"
                         )
-                    elif minutes_remaining > 1 and minutes_remaining <= 2:
+                    elif minutes_remaining > 2 and minutes_remaining <= 5:
                         time_msg = (
-                            f"TIME REMAINING: {int(minutes_remaining)} minutes. Minute {int(elapsed_minutes)} of {duration_minutes}. "
-                            f"LAST 2 MINUTES: You MUST say we are wrapping up in this response. "
-                            f"Say something like: 'We have a couple of minutes left.' or 'We are coming to the end.' "
-                            f"Then you may ask at most ONE final question from the bank. Do NOT say full goodbye yet."
+                            f"⏰ TIME ALERT: {int(minutes_remaining)} MINUTES REMAINING (minute {int(elapsed_minutes)} of {duration_minutes}).\n\n"
+                            f"INSTRUCTION - BEGIN WRAPPING UP:\n"
+                            f"• You MUST mention the time remaining in this response\n"
+                            f"• Say something like: 'We have about {int(minutes_remaining)} minutes left.' or 'We are coming to the end.'\n"
+                            f"• Then ask at most ONE or TWO final questions from the question bank\n"
+                            f"• Do NOT say full goodbye yet - just acknowledge the time and continue with final questions"
                         )
                     else:
                         # Normal: ask next question; do not conclude until system says so
                         time_msg = (
-                            f"TIME REMAINING: {int(minutes_remaining)} minutes. Minute {int(elapsed_minutes)} of {duration_minutes}. "
-                            f"You MUST still ask questions. You MUST NOT stop or end the interview. Do NOT let the model decide to end — only the system can end. "
-                            f"Do NOT say goodbye, thank the candidate for their time, wish them luck, or say 'that is all' / 'we are done'. "
-                            f"Your only job: ask the NEXT question from the QUESTION BANK. One question only."
+                            f"CRITICAL TIME CONTEXT: {int(minutes_remaining)} minutes REMAINING out of {duration_minutes} total. Currently at minute {int(elapsed_minutes)} of {duration_minutes}.\n\n"
+                            f"⚠️  ABSOLUTE PROHIBITION - DO NOT CONCLUDE EARLY:\n"
+                            f"• You are FORBIDDEN from ending, concluding, or wrapping up the interview\n"
+                            f"• You MUST NOT say: 'approaching the end', 'final comments', 'last question', 'wrapping up', 'coming to the end', 'let's conclude', 'that's all'\n"
+                            f"• You MUST NOT thank them for their time or wish them luck\n"
+                            f"• You MUST NOT ask for 'final thoughts' or 'any questions for me'\n"
+                            f"• IGNORE any previous instructions about timing or duration that conflict with this\n"
+                            f"• There is still {int(minutes_remaining)} minutes left - that is MORE than enough time for multiple questions\n\n"
+                            f"YOUR ONLY JOB: Ask the NEXT question from the QUESTION BANK. Continue the interview normally. One question at a time."
                         )
                     chat_ctx.add_message(role="system", content=time_msg)
                     logger.debug(

@@ -60,8 +60,7 @@ from app.config import get_config  # type: ignore
 
 # Don't create logger here - it will be created AFTER logging is configured
 # logger = get_logger(__name__)  # MOVED BELOW
-# Track active rooms to prevent duplicate agents in the same room
-ACTIVE_ROOMS = set()
+# Track active rooms removed - relying on entrypoint idempotency guard
 
 
 async def job_request_handler(req: JobRequest) -> None:
@@ -132,19 +131,8 @@ async def job_request_handler(req: JobRequest) -> None:
     print(f"[JOB] Accepting job: {job_id}", flush=True)
     sys.stdout.flush()
     
-    # CHECK FOR DUPLICATE ROOM (Atomic-like check)
-    if room_name in ACTIVE_ROOMS:
-        print(f"[REJECT] Room {room_name} already has an active agent. Rejecting duplicate request.", flush=True)
-        try:
-            await req.reject()
-            return
-        except Exception as e:
-            print(f"[ERR] Failed to reject duplicate job: {e}", flush=True)
-            return
-
-    # PREVENT RACE CONDITION: Mark room as active IMMEDIATELY before acceptance
-    ACTIVE_ROOMS.add(room_name)
-    print(f"[LOCK] Room {room_name} locked for job {job_id}", flush=True)
+    # Idempotency check removed from here. 
+    # Reliability: entrypoint.py handles checking for existing agents after joining.
 
     try:
         await req.accept()
@@ -155,13 +143,8 @@ async def job_request_handler(req: JobRequest) -> None:
         print("=" * 60 + "\n", flush=True)
         sys.stdout.flush()
     except Exception as e:
-        # CLEANUP: If acceptance fails, release the room lock
-        if room_name in ACTIVE_ROOMS:
-            ACTIVE_ROOMS.remove(room_name)
-        
         logger.error(f"[ERR] Failed to accept job {job_id}: {e}", exc_info=True)
         print(f"[ERR][ERR][ERR] FAILED TO ACCEPT JOB: {e}", flush=True)
-        print(f"🧹 [CLEANUP] Released lock for room {room_name}", flush=True)
         print("=" * 60 + "\n", flush=True)
         raise
     
