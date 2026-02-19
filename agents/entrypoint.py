@@ -496,6 +496,82 @@ async def entrypoint(ctx: JobContext) -> None:
                         asyncio.create_task(_trigger_monitoring_reply())
                 except Exception as e:
                     logger.error(f"Error handling monitoring alert: {e}")
+            
+            # Handle code snapshot (every 15s while typing)
+            if data.topic == "code-snapshot":
+                try:
+                    payload = json.loads(data.data)
+                    logger.info(f"📸 [CODE SNAPSHOT] Received from {data.participant.identity}")
+                    
+                    code_snippet = payload.get('code', '')
+                    question = payload.get('question', 'N/A')
+                    language = payload.get('language', 'N/A')
+                    
+                    # Analyze code snippet to provide contextual feedback
+                    code_lower = code_snippet.lower()
+                    observations = []
+                    
+                    if 'for' in code_lower or 'while' in code_lower:
+                        observations.append("using a loop")
+                    if 'if' in code_lower or 'elif' in code_lower or 'else' in code_lower:
+                        observations.append("using conditionals")
+                    if 'def' in code_lower or 'function' in code_lower or 'class' in code_lower:
+                        observations.append("defining functions/classes")
+                    if 'return' in code_lower:
+                        observations.append("handling return values")
+                    if 'import' in code_lower or 'require' in code_lower or '#include' in code_lower:
+                        observations.append("importing libraries")
+                    
+                    if observations:
+                        observation_text = " and ".join(observations)
+                        instruction = (
+                            f"[SYSTEM: Candidate is actively coding (15s typing interval). Provide brief, encouraging, "
+                            f"contextual feedback about their approach. Be conversational and supportive. Keep it short - 1-2 sentences max.]\n"
+                            f"I can see you're {observation_text} — why did you choose that approach? Keep going!"
+                        )
+                    else:
+                        instruction = (
+                            f"[SYSTEM: Candidate is actively coding (15s typing interval). Provide brief encouragement. "
+                            f"Keep it short - 1 sentence max.]\n"
+                            f"I can see you're working on the solution — keep going!"
+                        )
+                    
+                    async def _trigger_snapshot_reply():
+                        try:
+                            await session.generate_reply(instructions=instruction)
+                        except Exception as e:
+                            logger.error(f"Failed to trigger code snapshot reply: {e}")
+                    
+                    asyncio.create_task(_trigger_snapshot_reply())
+                    
+                except Exception as e:
+                    logger.error(f"Error handling code-snapshot data: {e}", exc_info=True)
+            
+            # Handle code idle (1min no typing)
+            if data.topic == "code-idle":
+                try:
+                    payload = json.loads(data.data)
+                    logger.info(f"⏸️ [CODE IDLE] Received from {data.participant.identity}")
+                    
+                    code_snippet = payload.get('code', '')
+                    question = payload.get('question', 'N/A')
+                    
+                    instruction = (
+                        f"[SYSTEM: Candidate has been idle for 1 minute while coding. Offer help or ask if they want to skip. "
+                        f"Be supportive and understanding. Keep it conversational and brief.]\n"
+                        f"Looks like you're stuck — need a hint, or shall we skip this question and move on?"
+                    )
+                    
+                    async def _trigger_idle_reply():
+                        try:
+                            await session.generate_reply(instructions=instruction)
+                        except Exception as e:
+                            logger.error(f"Failed to trigger code idle reply: {e}")
+                    
+                    asyncio.create_task(_trigger_idle_reply())
+                    
+                except Exception as e:
+                    logger.error(f"Error handling code-idle data: {e}", exc_info=True)
         
         # Start session - this will handle all user speech automatically
         logger.info("[PROD] Starting AgentSession (will handle user speech automatically)...")
