@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from livekit.agents import llm
 
-from agents.session_time import get_session_time  # type: ignore
+from services.session_time_store import get_store  # type: ignore
 from app.utils.logger import get_logger  # type: ignore
 from app.utils.datetime_utils import get_now_ist  # type: ignore
 
@@ -28,7 +28,7 @@ class TimeContextLLMWrapper:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         chat_ctx = kwargs.get("chat_ctx")
         if chat_ctx is not None and isinstance(chat_ctx, llm.ChatContext):
-            start_time, duration_minutes = get_session_time()
+            start_time, duration_minutes = get_store()
             if start_time is not None and duration_minutes is not None:
                 try:
                     now = get_now_ist()
