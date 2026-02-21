@@ -2,15 +2,12 @@
 Plugin Service
 
 Manages initialization and configuration of LiveKit plugins
-(STT, LLM, TTS, VAD, Avatar) with proper error handling.
+(STT, LLM, TTS, VAD, Avatar planned) with proper error handling.
 """
 
-import json
-import os
 from typing import Dict, Any, Optional
 
 from livekit import rtc
-from livekit.agents import AgentSession
 from livekit.plugins import (  # type: ignore
     openai,
     silero,
@@ -38,19 +35,7 @@ class PluginService:
     Handles initialization, configuration, and error handling
     for all plugin types used by the interview agent.
     """
-    
-    # Domain-specific keywords for STT accuracy
-    STT_KEYWORDS = [
-        ("Regional Rural Bank", 10), ("RRB", 10), ("Probationary Officer", 10), ("PO", 10),
-        ("NABARD", 10), ("RBI", 10), ("Banking", 10), ("Financial Inclusion", 10),
-        ("Savings Account", 10), ("Current Account", 10), ("Fixed Deposit", 10), ("KYC", 10),
-        ("Loan", 10), ("Interest Rate", 10), ("Repo Rate", 10), ("Base Rate", 10),
-        ("NPA", 10), ("Non-Performing Asset", 10), ("PMJDY", 10), ("Mudra", 10),
-        ("Digital Banking", 10), ("Customer Service", 10), ("Balance Sheet", 10), ("Account Opening", 10),
-        ("Commercial Bank", 10), ("Cooperative Bank", 10), ("Rural Banking", 10), ("Banking Operations", 10),
-        ("Recurring Deposit", 10), ("Overdraft", 10), ("Credit", 10), ("Debit", 10)
-    ]
-    
+
     def __init__(self, config: Config):
         """
         Initialize plugin service.

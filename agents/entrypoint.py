@@ -8,8 +8,8 @@ error handling, logging, and plugin management.
 import asyncio
 import json
 import logging
-import sys
 import os
+import sys
 import time
 from typing import Optional, Any, Dict, List
 from datetime import datetime, timedelta
@@ -30,7 +30,6 @@ if backend_path.exists() and str(backend_path) not in sys.path:
 from app.config import Config, get_config  # type: ignore
 from app.utils.datetime_utils import get_now_ist, to_ist  # type: ignore
 from agents.professional_arjun import ProfessionalArjun
-from agents.utils import get_track_source_name
 try:
     from app.services.plugin_service import PluginService  # type: ignore
 except ImportError:
@@ -73,7 +72,7 @@ async def entrypoint(ctx: JobContext) -> None:
             log_file = Path(__file__).parent.parent / "entrypoint.log"
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"\n{'='*60}\n")
-                f.write(f"ENTRYPOINT CALLED: {asyncio.get_event_loop().time()}\n")
+                f.write(f"ENTRYPOINT CALLED: {time.time()}\n")
                 f.write(f"Job ID: {ctx.job.id}\n")
                 f.write(f"Room: {ctx.room.name}\n")
         except Exception:
@@ -194,7 +193,8 @@ async def entrypoint(ctx: JobContext) -> None:
         # Step 2: Fetch candidate application form from DB (for {full_name}, {email}, etc. in context)
         logger.info("Step 2: Fetching Candidate Application Data...")
         print("Step 2: Fetching Candidate Application Data...", flush=True)
-        candidate_profile = await _fetch_candidate_profile(ctx.room, config, booking_token=booking_token)
+        from services.candidate_profile import fetch_candidate_profile
+        candidate_profile = await fetch_candidate_profile(ctx.room, config, booking_token=booking_token)
         
         # Step 2b: Fetch System Instructions & Booking Prompt
         logger.info("Step 2b: Fetching System Instructions & Booking Prompt...")
@@ -231,7 +231,8 @@ async def entrypoint(ctx: JobContext) -> None:
         # Step 3: Setup participant event handlers
         logger.info("Step 3: Setting up participant event handlers...")
         print("Step 3: Setting up participant event handlers...", flush=True)
-        _setup_participant_handlers(ctx, room_sid)
+        from handlers.event_handlers import setup_participant_handlers
+        setup_participant_handlers(ctx, room_sid, logger_instance=logger)
         
         # Step 3.5: Install STT log interceptor to capture transcript timing
         logger.info("Step 3.5: Installing STT log interceptor...")
@@ -379,8 +380,8 @@ async def entrypoint(ctx: JobContext) -> None:
         turn_detector = None  # Use VAD-based detection
         
         # Step 6: Create agent session
-        logger.info("Step 5: Creating AgentSession...")
-        print("Step 5: Creating AgentSession...", flush=True)
+        logger.info("Step 6: Creating AgentSession...")
+        print("Step 6: Creating AgentSession...", flush=True)
         try:
             session = AgentSession(
                 stt=plugins["stt"],
@@ -394,18 +395,18 @@ async def entrypoint(ctx: JobContext) -> None:
                 # CRITICAL: Increase min_endpointing_delay to give STT more time to finalize
                 min_endpointing_delay=1.5,
             )
-            logger.info("[OK] Step 5: Success - AgentSession created!")
-            print("[OK] Step 5: Success - AgentSession created!", flush=True)
+            logger.info("[OK] Step 6: Success - AgentSession created!")
+            print("[OK] Step 6: Success - AgentSession created!", flush=True)
         except Exception as e:
-            error_msg = f"[ERR] Step 5: Failed to create AgentSession - {e}"
+            error_msg = f"[ERR] Step 6: Failed to create AgentSession - {e}"
             logger.error(error_msg, exc_info=True)
             print(error_msg, flush=True)
             print(f"   Error type: {type(e).__name__}", flush=True)
             raise
         
         # Step 7: Start session
-        logger.info("Step 6: Starting session...")
-        print("Step 6: Starting session...", flush=True)
+        logger.info("Step 7: Starting session...")
+        print("Step 7: Starting session...", flush=True)
         
         # Assemble Agent Instructions
         agent_instructions = system_instructions or ""
@@ -419,10 +420,8 @@ async def entrypoint(ctx: JobContext) -> None:
         # Substitute placeholders (e.g. {name}, {full_name}, {email}) from candidate profile
         if agent_instructions:
             try:
-                if "substitute_context_placeholders" in globals() or "_substitute_context_placeholders" in globals():
-                     substitute_func = globals().get("_substitute_context_placeholders") or globals().get("substitute_context_placeholders")
-                     if substitute_func:
-                         agent_instructions = substitute_func(agent_instructions, candidate_profile)
+                from utils.prompt_utils import substitute_context_placeholders
+                agent_instructions = substitute_context_placeholders(agent_instructions, candidate_profile)
             except Exception as e:
                 logger.warning(f"Failed to substitute placeholders: {e}")
 
@@ -451,146 +450,22 @@ async def entrypoint(ctx: JobContext) -> None:
         print(f"📊 Room state before session.start: connected={ctx.room.isconnected()}, participants={len(ctx.room.remote_participants)}", flush=True)
         
         # Add event handlers to track user speech and agent replies
-        _setup_session_event_handlers(session, logger, booking_token, room_name, transcript_storage, ctx)
+        from handlers.event_handlers import setup_session_event_handlers
+        setup_session_event_handlers(
+            session, logger, booking_token, room_name, transcript_storage, ctx
+        )
         
-        # [NEW] Code submission handler for experimental coding feature
-        @ctx.room.on("data_received")
-        def on_data_received(data: rtc.DataPacket):
-            if data.topic == "code-submission":
-                try:
-                    payload = json.loads(data.data)
-                    logger.info(f"📥 [CODE SUBMISSION] Received from {data.participant.identity}")
-                    
-                    # Format a hidden "system" instruction for the LLM (include actual code so LLM can analyze it)
-                    candidate_code = payload.get('code', '')
-                    submission_context = (
-                        f"\n\n[SYSTEM: Candidate has submitted code for analysis]\n"
-                        f"Problem: {payload.get('question', 'N/A')}\n"
-                        f"Language: {payload.get('language', 'N/A')}\n"
-                        f"--- CANDIDATE'S CODE ---\n{candidate_code}\n--- END CODE ---\n"
-                        f"Execution Output: {payload.get('executionOutput', 'N/A')}\n"
-                        f"AI Analysis Verdict: {payload.get('aiAnalysis', 'N/A')}\n"
-                        f"CRITICAL: You MUST read and analyze the candidate's code above. Discuss specific lines, logic, and implementation. "
-                        f"Ask follow-up questions anchored to their actual code. Provide specific feedback as per your role."
-                    )
-                    
-                    # Add to session as a background task to avoid blocking the event handler
-                    async def _trigger_reply():
-                        try:
-                            logger.info("🧪 Triggering AI response for code submission...")
-                            await session.generate_reply(instructions=submission_context)
-                        except Exception as reply_err:
-                            logger.error(f"Failed to trigger code submission reply: {reply_err}")
-                    
-                    asyncio.create_task(_trigger_reply())
-                    
-                except Exception as e:
-                    logger.error(f"Error handling code-submission data: {e}", exc_info=True)
-            
-            if data.topic == "monitoring":
-                try:
-                    payload = json.loads(data.data)
-                    alert_type = payload.get('alertType')
-                    logger.warning(f"🚨 [MONITORING ALERT] {alert_type} from {data.participant.identity}")
-                    
-                    # Logic to react to monitoring alerts
-                    instruction = None
-                    if alert_type == "multiple_people_detected":
-                        instruction = "[SYSTEM: Multiple people detected in candidate's camera. Address this firmly but professionally. Ask if someone is helping them.]"
-                    elif alert_type == "candidate_struggling":
-                        emotion = payload.get('emotion', 'unknown')
-                        instruction = f"[SYSTEM: Candidate appears {emotion} or stressed. Be encouraging and offer a small hint if they seem stuck on the current question.]"
-                    
-                    if instruction:
-                        async def _trigger_monitoring_reply():
-                            try:
-                                await session.generate_reply(instructions=instruction)
-                            except Exception as e:
-                                logger.error(f"Failed to trigger monitoring reply: {e}")
-                        asyncio.create_task(_trigger_monitoring_reply())
-                except Exception as e:
-                    logger.error(f"Error handling monitoring alert: {e}")
-            
-            # Handle code snapshot (every 15s while typing)
-            if data.topic == "code-snapshot":
-                try:
-                    payload = json.loads(data.data)
-                    logger.info(f"📸 [CODE SNAPSHOT] Received from {data.participant.identity}")
-                    
-                    code_snippet = payload.get('code', '')
-                    question = payload.get('question', 'N/A')
-                    language = payload.get('language', 'N/A')
-                    
-                    # Analyze code snippet to provide contextual feedback
-                    code_lower = code_snippet.lower()
-                    observations = []
-                    
-                    if 'for' in code_lower or 'while' in code_lower:
-                        observations.append("using a loop")
-                    if 'if' in code_lower or 'elif' in code_lower or 'else' in code_lower:
-                        observations.append("using conditionals")
-                    if 'def' in code_lower or 'function' in code_lower or 'class' in code_lower:
-                        observations.append("defining functions/classes")
-                    if 'return' in code_lower:
-                        observations.append("handling return values")
-                    if 'import' in code_lower or 'require' in code_lower or '#include' in code_lower:
-                        observations.append("importing libraries")
-                    
-                    if observations:
-                        observation_text = " and ".join(observations)
-                        instruction = (
-                            f"[SYSTEM: Candidate is actively coding. Here is their current code:\n---\n{code_snippet}\n---\n"
-                            f"Provide brief, encouraging feedback about what they've written. Reference specific parts if helpful. 1-2 sentences max.]\n"
-                            f"I can see you're {observation_text} — why did you choose that approach? Keep going!"
-                        )
-                    else:
-                        instruction = (
-                            f"[SYSTEM: Candidate is actively coding. Here is their current code:\n---\n{code_snippet}\n---\n"
-                            f"Provide brief encouragement. Reference what they've written if helpful. 1 sentence max.]\n"
-                            f"I can see you're working on the solution — keep going!"
-                        )
-                    
-                    async def _trigger_snapshot_reply():
-                        try:
-                            await session.generate_reply(instructions=instruction)
-                        except Exception as e:
-                            logger.error(f"Failed to trigger code snapshot reply: {e}")
-                    
-                    asyncio.create_task(_trigger_snapshot_reply())
-                    
-                except Exception as e:
-                    logger.error(f"Error handling code-snapshot data: {e}", exc_info=True)
-            
-            # Handle code idle (1min no typing)
-            if data.topic == "code-idle":
-                try:
-                    payload = json.loads(data.data)
-                    logger.info(f"⏸️ [CODE IDLE] Received from {data.participant.identity}")
-                    
-                    code_snippet = payload.get('code', '')
-                    question = payload.get('question', 'N/A')
-                    
-                    instruction = (
-                        f"[SYSTEM: Candidate has been idle for 1 minute. Their current code:\n---\n{code_snippet}\n---\n"
-                        f"Offer a hint relevant to their code, or ask if they want to skip. Be supportive. Brief.]\n"
-                        f"Looks like you're stuck — need a hint, or shall we skip this question and move on?"
-                    )
-                    
-                    async def _trigger_idle_reply():
-                        try:
-                            await session.generate_reply(instructions=instruction)
-                        except Exception as e:
-                            logger.error(f"Failed to trigger code idle reply: {e}")
-                    
-                    asyncio.create_task(_trigger_idle_reply())
-                    
-                except Exception as e:
-                    logger.error(f"Error handling code-idle data: {e}", exc_info=True)
+        # Data channel handlers (code-submission, monitoring, code-snapshot, code-idle)
+        try:
+            from handlers.data_handlers import setup_data_handlers
+            setup_data_handlers(ctx.room, session, logger_instance=logger)
+        except ImportError as e:
+            logger.warning(f"Could not load data handlers (coding features disabled): {e}")
         
-        # Step 6: Wait for participant to join, then generate initial greeting (BEFORE session.start so greeting runs)
-        logger.info("Step 6: Waiting for participant to join room...")
-        print("Step 6: Waiting for participant to join room...")
-        max_wait_time = 30
+        # Step 7: Wait for participant to join, then start session
+        logger.info("Step 7: Waiting for participant to join room...")
+        print("Step 7: Waiting for participant to join room...")
+        max_wait_time = 5
         wait_interval = 1
         waited = 0
         while not ctx.room.remote_participants and waited < max_wait_time:
@@ -606,57 +481,11 @@ async def entrypoint(ctx: JobContext) -> None:
             for participant in ctx.room.remote_participants.values():
                 logger.info(f"   👤 Participant: identity={participant.identity}, sid={participant.sid}")
                 print(f"   👤 Participant: identity={participant.identity}, sid={participant.sid}")
-            # Step 6b: Generate initial greeting before session.start()
-            logger.info("Step 6b: Generating greeting...")
-            print("Step 6b: Generating greeting...")
-            try:
-                if not hasattr(session, 'tts') or session.tts is None:
-                    raise RuntimeError("Session TTS is None - cannot generate reply!")
-                if not hasattr(session, 'llm') or session.llm is None:
-                    raise RuntimeError("Session LLM is None - cannot generate reply!")
-                if not ctx.room.isconnected():
-                    raise RuntimeError("Room is not connected - cannot generate reply!")
-                logger.info(f"   Session TTS={session.tts is not None}, LLM={session.llm is not None}, Agent state={session.agent_state}")
-                from app.services.history_managed_llm_wrapper import set_skip_transcript  # type: ignore
-                set_skip_transcript(True)
-                logger.info("   Calling session.generate_reply() for greeting...")
-                greeting_instruction = (
-                    "Start the interview with your opening as defined in your role and instructions above. "
-                    "Give a brief, professional greeting (introduce yourself and the interview topic as per your context), "
-                    "then ask exactly ONE simple opening question (e.g. about themselves or background). "
-                    "Keep it short. Do not use brackets in your speech. Wait for their response before continuing."
-                )
-                try:
-                    await asyncio.wait_for(
-                        session.generate_reply(instructions=greeting_instruction),
-                        timeout=60.0
-                    )
-                except asyncio.TimeoutError:
-                    raise RuntimeError("generate_reply timed out after 60 seconds - TTS or LLM may be stuck!")
-                set_skip_transcript(False)
-                logger.info("[OK] Step 6b: Success - Greeting generated! (transcript skipped)")
-                print("[OK] Step 6b: Success - Greeting generated! (transcript skipped)")
-            except RuntimeError as e:
-                from app.services.history_managed_llm_wrapper import set_skip_transcript  # type: ignore
-                set_skip_transcript(False)
-                if "isn't running" in str(e):
-                    logger.warning("[WARN]  Session stopped before greeting could be generated (participant may have disconnected)")
-                    print("[WARN]  Session stopped before greeting could be generated", flush=True)
-                else:
-                    logger.error(f"[ERR] Error generating greeting: {e}", exc_info=True)
-                    print(f"[ERR] Error generating greeting: {e}", flush=True)
-                    raise
-            except Exception as e:
-                from app.services.history_managed_llm_wrapper import set_skip_transcript  # type: ignore
-                set_skip_transcript(False)
-                logger.error(f"[ERR] Unexpected error generating greeting: {e}", exc_info=True)
-                print(f"[ERR] Unexpected error generating greeting: {e}", flush=True)
-                raise
         else:
-            logger.warning(f"[WARN]  No participants joined after {max_wait_time}s, skipping greeting generation")
-            print(f"[WARN]  No participants joined after {max_wait_time}s, skipping greeting generation")
+            logger.warning(f"[WARN]  No participants joined after {max_wait_time}s (will greet when they join)")
+            print(f"[WARN]  No participants joined after {max_wait_time}s (will greet when they join)")
         
-        # Start session - this will handle all user speech automatically
+        # Start session - greeting will be generated AFTER start (generate_reply requires session to be running)
         logger.info("[PROD] Starting AgentSession (will handle user speech automatically)...")
         print("[PROD] Starting AgentSession (will handle user speech automatically)...", flush=True)
         
@@ -670,10 +499,10 @@ async def entrypoint(ctx: JobContext) -> None:
                     ),
                 ),
             )
-            logger.info("[OK] Step 6: Success - Session started with BVC noise cancellation!")
-            print("[OK] Step 6: Success - Session started with BVC noise cancellation!", flush=True)
+            logger.info("[OK] Step 7: Success - Session started with BVC noise cancellation!")
+            print("[OK] Step 7: Success - Session started with BVC noise cancellation!", flush=True)
         except Exception as e:
-            error_msg = f"[ERR] Step 6: Failed to start session - {e}"
+            error_msg = f"[ERR] Step 7: Failed to start session - {e}"
             logger.error(error_msg, exc_info=True)
             print(error_msg, flush=True)
             print(f"   Error type: {type(e).__name__}", flush=True)
@@ -703,6 +532,40 @@ async def entrypoint(ctx: JobContext) -> None:
             raise RuntimeError("Room connection lost - agent cannot function!")
         logger.info(f"[OK] Session components verified: TTS={session.tts is not None}, LLM={session.llm is not None}, Room connected={ctx.room.isconnected()}")
         print(f"[OK] Session components verified", flush=True)
+        
+        # Step 7b: Generate initial greeting (AFTER session.start - generate_reply requires session to be running)
+        if ctx.room.remote_participants:
+            logger.info("[GREETING] Generating initial greeting (session is now running)...")
+            print("[GREETING] Generating initial greeting...", flush=True)
+            try:
+                from app.services.history_managed_llm_wrapper import set_skip_transcript  # type: ignore
+                set_skip_transcript(True)
+                greeting_instruction = (
+                    "Start the interview with your opening as defined in your role and instructions above. "
+                    "Give a brief, professional greeting (introduce yourself and the interview topic as per your context), "
+                    "then ask exactly ONE simple opening question (e.g. about themselves or background). "
+                    "Keep it short. Do not use brackets in your speech. Wait for their response before continuing."
+                )
+                await asyncio.wait_for(
+                    session.generate_reply(instructions=greeting_instruction),
+                    timeout=60.0
+                )
+                set_skip_transcript(False)
+                logger.info("[GREETING] Success - Agent greeted first!")
+                print("[GREETING] Success - Agent greeted first!", flush=True)
+            except asyncio.TimeoutError:
+                from app.services.history_managed_llm_wrapper import set_skip_transcript  # type: ignore
+                set_skip_transcript(False)
+                logger.error("[GREETING] Failed - generate_reply timed out after 60 seconds")
+                print("[GREETING] Failed - timed out", flush=True)
+            except Exception as e:
+                from app.services.history_managed_llm_wrapper import set_skip_transcript  # type: ignore
+                set_skip_transcript(False)
+                logger.error(f"[GREETING] Failed - {e}", exc_info=True)
+                print(f"[GREETING] Failed - {e}", flush=True)
+        else:
+            logger.info("[GREETING] Skipped - no participant in room")
+            print("[GREETING] Skipped - no participant in room", flush=True)
         
         # Log session state
         logger.info(f"[DEBUG] Session state check:")
@@ -755,204 +618,24 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("💡 Event handlers are installed to log all speech events")
         print("--- Entrypoint Active (Interview in progress) ---")
         print("💡 AgentSession is listening for user speech automatically")
-        
-        session_start_time = time.time()
-        last_health_check = time.time()
-        consecutive_errors = 0
-        max_consecutive_errors = 5
-        interview_time_limit_reached = False
-        warning_sent = False  # Track if 5-minute warning was sent to frontend
-        wrapping_up_instruction_sent = False  # One-time: tell agent to say "we are wrapping up" and ask final questions (~25 min, last 5 min)
-        conclude_instruction_sent = False  # One-time: tell agent to say "let us conclude" at ~28 min (last 2 min), no more questions
-        closing_triggered = False  # One-time: send closing LLM call only when full duration reached (30 min)
-        
-        # Log initial room state
+
         logger.info(f"[DEBUG] Room monitoring started - connected: {ctx.room.isconnected()}, remote_participants: {len(ctx.room.remote_participants)}")
         logger.info(f"[DEBUG] Session agent_state: {session.agent_state}, user_state: {session.user_state}")
         print(f"[DEBUG] Room monitoring started - connected: {ctx.room.isconnected()}, remote_participants: {len(ctx.room.remote_participants)}")
         print(f"[DEBUG] Session state: agent={session.agent_state}, user={session.user_state}")
-        
-        try:
-            while ctx.room.isconnected() and not interview_time_limit_reached:
-                # Check if interview time limit has been reached
-                current_time_ist = get_now_ist()
-                elapsed_minutes = (current_time_ist - interview_start_time).total_seconds() / 60
-                
-                # Check time limit (either scheduled end time or duration from start)
-                # End only at FULL duration (30 min); never at 90%. Optionally require at least 90% when using scheduled_end (avoid wrong slot).
-                time_limit_reached = False
-                time_remaining_minutes = 0
-                at_least_90_pct = elapsed_minutes >= (interview_duration_minutes * 0.9)
 
-                if scheduled_end_time:
-                    # Use scheduled end time if available
-                    time_remaining_minutes = (scheduled_end_time - current_time_ist).total_seconds() / 60
-                    past_scheduled_end = current_time_ist >= scheduled_end_time
-                    # Only end on scheduled_end when at least 90% elapsed (prevents wrong slot/TZ ending early)
-                    if past_scheduled_end and at_least_90_pct:
-                        time_limit_reached = True
-                        logger.info(f"⏰ Interview time limit reached (scheduled end: {scheduled_end_time}, elapsed: {elapsed_minutes:.1f} min)")
-                    elif past_scheduled_end and not at_least_90_pct:
-                        logger.info(f"⏰ Scheduled end passed but elapsed {elapsed_minutes:.1f} min < 90% - waiting for full duration")
-                else:
-                    # Use duration from start — end only when full duration reached
-                    time_remaining_minutes = interview_duration_minutes - elapsed_minutes
-                    if elapsed_minutes >= interview_duration_minutes:
-                        time_limit_reached = True
-                        logger.info(f"⏰ Interview duration limit reached ({interview_duration_minutes} minutes elapsed)")
-                
-                # Send time remaining update every 10 seconds (for timer display)
-                # Use a simple variable to track last update time
-                if 'last_time_update' not in locals():
-                    last_time_update = interview_start_time
-                
-                time_since_last_update = (current_time_ist - last_time_update).total_seconds()
-                if time_since_last_update >= 10:
-                    try:
-                        time_update_message = json.dumps({
-                            "type": "time_remaining",
-                            "time_remaining_minutes": max(0, time_remaining_minutes),
-                        }).encode('utf-8')
-                        
-                        await ctx.room.local_participant.publish_data(
-                            time_update_message,
-                            topic="lk-chat",
-                            reliable=False,  # Use unreliable for frequent updates
-                        )
-                        last_time_update = current_time_ist
-                        logger.debug(f"⏰ Sent time remaining update: {time_remaining_minutes:.1f} minutes")
-                    except Exception as e:
-                        logger.debug(f"⚠️  Failed to send time update: {e}")
-                
-                # Send 5-minute warning to frontend before time limit
-                if not warning_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 5:
-                    warning_sent = True
-                    try:
-                        warning_message = json.dumps({
-                            "type": "interview_warning",
-                            "message": f"Interview will end in approximately {int(time_remaining_minutes)} minute(s). Please wrap up your responses.",
-                        }).encode('utf-8')
-
-                        await ctx.room.local_participant.publish_data(
-                            warning_message,
-                            topic="lk-chat",
-                            reliable=True,
-                        )
-                        logger.info(f"⚠️  Sent 5-minute warning ({(time_remaining_minutes):.1f} min remaining)")
-                    except Exception as e:
-                        logger.warning(f"⚠️  Failed to send warning: {e}")
-                
-                # At ~5 min remaining: tell agent to say "we are wrapping up" and ask final questions (one-time)
-                if not wrapping_up_instruction_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 5:
-                    wrapping_up_instruction_sent = True
-                    try:
-                        wrapping_up_instructions = (
-                            f"SYSTEM: You have about {int(time_remaining_minutes)} minutes left. "
-                            "Tell the candidate we are wrapping up (e.g. 'We have about 5 minutes left' or 'We are coming to the end'). "
-                            "Ask one or two final questions from the question bank. Do NOT say full goodbye or thank them for their time yet; save that for when you receive END_INTERVIEW. "
-                            "Keep it natural and brief."
-                        )
-                        await session.generate_reply(instructions=wrapping_up_instructions)
-                        logger.info(f"✅ Sent wrapping-up instruction to agent (~{int(time_remaining_minutes)} min left)")
-                        print(f"⏰ Wrapping-up instruction sent (~{int(time_remaining_minutes)} min left)", flush=True)
-                    except Exception as e:
-                        logger.warning(f"⚠️  Could not send wrapping-up instruction: {e}")
-                
-                # At ~2 min remaining: tell agent to say "let us conclude" only — do not ask more questions (one-time)
-                if not conclude_instruction_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 2:
-                    conclude_instruction_sent = True
-                    try:
-                        conclude_instructions = (
-                            f"SYSTEM: You have about {int(time_remaining_minutes)} minutes left. Do NOT ask any more questions. "
-                            "Say clearly that we are concluding (e.g. 'We have a couple of minutes left, so let us conclude.' or 'That brings us to the end.'). "
-                            "One short sentence only. Do NOT say full goodbye yet; you will receive END_INTERVIEW in a moment for that."
-                        )
-                        await session.generate_reply(instructions=conclude_instructions)
-                        logger.info(f"✅ Sent conclude instruction to agent (~{int(time_remaining_minutes)} min left)")
-                        print(f"⏰ Conclude instruction sent (~{int(time_remaining_minutes)} min left)", flush=True)
-                    except Exception as e:
-                        logger.warning(f"⚠️  Could not send conclude instruction: {e}")
-                
-                # Trigger closing only when FULL duration reached (30 min or scheduled end) — not at 90%
-                trigger_closing_now = time_limit_reached and not closing_triggered
-                if trigger_closing_now:
-                    closing_triggered = True
-                    interview_time_limit_reached = True
-                    logger.info("⏰ Full interview duration reached - ending interview gracefully")
-                    print("⏰ Full duration reached - ending interview", flush=True)
-                    
-                    # One LLM call: agent concludes (goodbye), then we end
-                    try:
-                        closing_instructions = """SYSTEM: END_INTERVIEW.
-
-You may now conclude the interview. Politely conclude in 2–3 sentences: thank the candidate, say the interview is complete, and that they will be redirected to the evaluation page where they can view results and feedback. Wish them well. Keep it brief and professional."""
-                        
-                        await session.generate_reply(instructions=closing_instructions)
-                        await asyncio.sleep(5)  # Wait for closing message to be fully spoken (increased from 3 to 5 seconds)
-                        logger.info("✅ Closing message completed")
-                    except Exception as e:
-                        logger.warning(f"⚠️  Could not generate closing message: {e}")
-                        # Even if message fails, continue with completion
-                    
-                    # Send completion signal to frontend via data channel
-                    try:
-                        completion_message = json.dumps({
-                            "type": "interview_completed",
-                            "message": "Interview completed. Redirecting to evaluation page...",
-                            "token": booking_token,
-                            "duration_minutes": int(elapsed_minutes),
-                        }).encode('utf-8')
-                        
-                        await ctx.room.local_participant.publish_data(
-                            completion_message,
-                            topic="lk-chat",
-                            reliable=True,  # Use reliable for important messages
-                        )
-                        logger.info("✅ Sent interview completion signal to frontend")
-                        print("✅ Sent completion signal to frontend", flush=True)
-                    except Exception as e:
-                        logger.warning(f"⚠️  Failed to send completion signal: {e}")
-                    
-                    # Give a moment for the message to be sent, then end gracefully
-                    await asyncio.sleep(2)
-                    
-                    # Update booking status to completed
-                    if booking_token:
-                        try:
-                            from app.services.booking_service import BookingService  # type: ignore
-                            booking_service = BookingService(config)
-                            booking_service.update_booking_status(booking_token, "completed")
-                            logger.info(f"✅ Updated booking status to 'completed' for {booking_token}")
-                        except Exception as e:
-                            logger.warning(f"⚠️  Failed to update booking status: {e}")
-                    
-                    # Disconnect from room to end interview
-                    try:
-                        logger.info("🔌 Disconnecting from room to end interview")
-                        await ctx.room.disconnect()
-                        logger.info("✅ Successfully disconnected from room")
-                    except Exception as e:
-                        logger.warning(f"⚠️  Error disconnecting from room: {e}")
-                    
-                    # Break out of loop to end interview
-                    break
-                
-                # Check time more frequently (every 1 second) when close to time limit
-                # This ensures we catch the exact moment time runs out
-                if time_remaining_minutes <= 1:
-                    await asyncio.sleep(1)  # Check every second when < 1 minute remaining
-                else:
-                    await asyncio.sleep(5)  # Check every 5 seconds otherwise
-        finally:
-            # Step 7: Update booking status and create evaluation after interview completes
-            # This runs even if the loop breaks or an exception (including CancelledError) occurs
-            await _finalize_interview(
-                booking_token=booking_token,
-                room_name=room_name,
-                interview_start_time=interview_start_time,
-                plugins=plugins,
-                config=config
-            )
+        from services.interview_loop import run_interview_time_loop
+        await run_interview_time_loop(
+            ctx=ctx,
+            session=session,
+            interview_start_time=interview_start_time,
+            interview_duration_minutes=interview_duration_minutes,
+            scheduled_end_time=scheduled_end_time,
+            booking_token=booking_token,
+            room_name=room_name,
+            plugins=plugins,
+            config=config,
+        )
 
         logger.info("=" * 60)
         logger.info("[OK] Entrypoint Finished Successfully")
@@ -973,7 +656,7 @@ You may now conclude the interview. Politely conclude in 2–3 sentences: thank 
             with open(log_file, "a", encoding="utf-8") as f:
                 import traceback
                 f.write(f"\n{'='*60}\n")
-                f.write(f"ERROR at {asyncio.get_event_loop().time()}\n")
+                f.write(f"ERROR at {time.time()}\n")
                 f.write(f"{error_msg}\n")
                 f.write(f"Error type: {type(e).__name__}\n")
                 f.write(f"Traceback:\n{traceback.format_exc()}\n")
@@ -995,495 +678,3 @@ You may now conclude the interview. Politely conclude in 2–3 sentences: thank 
     finally:
         # Cleanup tasks or state if needed
         pass
-
-
-def _substitute_context_placeholders(context: str, candidate_profile: Optional[dict]) -> str:
-    """
-    Replace placeholders in dashboard context with candidate profile values.
-    E.g. {name} or {full_name} -> candidate name, {email} -> email, etc.
-    Uses candidate_profile keys; {name} is aliased to full_name.
-    Unknown placeholders are left as-is.
-    """
-    if not context or not context.strip():
-        return context
-    subs = {}
-    if candidate_profile and isinstance(candidate_profile, dict):
-        for k, v in candidate_profile.items():
-            if k and isinstance(k, str) and k != "_id":
-                val = str(v).strip() if v is not None else ""
-                # Skip substituting internal "id" (MongoDB doc id) so we don't leak it into speech
-                if k == "id" and len(val) == 24 and val.isalnum():
-                    continue
-                subs[k] = val
-        # Alias: {name} -> full_name
-        if "full_name" in subs:
-            subs["name"] = subs["full_name"]
-        elif "full_name" in candidate_profile:
-            subs["name"] = str(candidate_profile["full_name"]).strip() if candidate_profile["full_name"] else ""
-            
-        # Format list-based fields for better prompt injection
-        if isinstance(candidate_profile.get("skills"), list):
-            subs["skills"] = ", ".join(candidate_profile["skills"])
-        if isinstance(candidate_profile.get("projects"), list):
-            subs["projects"] = "\n- ".join([""] + candidate_profile["projects"])
-            
-    # Replace {key} with value for each key in subs
-    for key, value in subs.items():
-        if key:
-            context = context.replace("{" + key + "}", value)
-    
-    # Replace common placeholders that might be missing from candidate_profile with empty string
-    # This prevents the LLM from seeing literal {full_name} etc. and echoing it
-    common_placeholders = ["full_name", "email", "graduation_degree", "skills", "name"]
-    for placeholder in common_placeholders:
-        if "{" + placeholder + "}" in context:
-            # Only replace if not already substituted (not in subs)
-            if placeholder not in subs:
-                context = context.replace("{" + placeholder + "}", "")
-    
-    return context
-
-
-async def _finalize_interview(
-    booking_token: Optional[str],
-    room_name: str,
-    interview_start_time: Any,
-    plugins: Dict[str, Any],
-    config: Any
-) -> None:
-    """
-    Finalize interview: update status and create evaluation.
-    This is called in a finally block to ensure it always runs.
-    """
-    # Step 7: Update booking status and create evaluation after interview completes
-    logger.info("Step 7: Finalizing interview...")
-    print("Step 7: Finalizing interview...", flush=True)
-    
-    # Update booking status to completed if not already done
-    if booking_token:
-        try:
-            from app.services.booking_service import BookingService  # type: ignore
-            booking_service = BookingService(config)
-            booking_service.update_booking_status(booking_token, "completed")
-            logger.info(f"✅ [FINALIZE] Updated booking status to 'completed'")
-        except Exception as e:
-            logger.warning(f"⚠️  [FINALIZE] Failed to update booking status: {e}")
-    
-    # Create evaluation
-    logger.info("Step 7b: Creating interview evaluation...")
-    print("Step 7b: Creating interview evaluation...", flush=True)
-    try:
-        if booking_token:
-            from app.services.evaluation_service import EvaluationService  # type: ignore
-            from app.services.transcript_storage_service import TranscriptStorageService  # type: ignore
-            
-            evaluation_service = EvaluationService(config)
-            transcript_service = TranscriptStorageService(config)
-            
-            # Get transcript
-            transcript = transcript_service.get_transcript(booking_token)
-            
-            # Calculate duration
-            duration_minutes = None
-            if interview_start_time:
-                duration_minutes = int((get_now_ist() - interview_start_time).total_seconds() / 60)
-            
-            # Extract token usage from LLM timing wrapper
-            token_usage = None
-            try:
-                llm = plugins.get("llm") if plugins else None
-                if llm:
-                    llm_type = type(llm).__name__
-                    logger.info(f"📊 [FINALIZE] Extracting usage from LLM type: {llm_type}")
-                    
-                    # 1. Check for wrapped chat (TimingLLMWrapper) on .chat attribute
-                    if hasattr(llm, "chat") and hasattr(llm.chat, "get_total_usage"):
-                        token_usage = llm.chat.get_total_usage()
-                        logger.info(f"📊 [FINALIZE] Token usage from llm.chat: {token_usage}")
-                    
-                    # 2. Fallback: Check if the LLM object itself has get_total_usage (e.g. if it is the wrapper itself)
-                    elif hasattr(llm, "get_total_usage"):
-                        token_usage = llm.get_total_usage()
-                        logger.info(f"📊 [FINALIZE] Token usage from llm object: {token_usage}")
-                        
-                    # 3. Fallback: If it's a FallbackLLM, check its internal state or wrapped components if possible
-                    # (Note: FallbackLLM typically exposes .chat which is wrapped, so #1 should catch it)
-                    
-                    if not token_usage:
-                        # Debug info if usage is still missing
-                        chat_attr = getattr(llm, "chat", None)
-                        chat_type = type(chat_attr).__name__ if chat_attr else "None"
-                        chat_dir = dir(chat_attr) if chat_attr else []
-                        logger.warning(f"⚠️  [FINALIZE] Token usage NOT found! llm_type={llm_type}, chat_type={chat_type}")
-                        logger.debug(f"    llm.chat dir: {chat_dir}")
-                else:
-                    logger.warning(f"⚠️  [FINALIZE] LLM plugin not found in plugins dict (keys={list(plugins.keys()) if plugins else 'None'})")
-            except Exception as e:
-                logger.warning(f"⚠️  [FINALIZE] Failed to extract token usage: {e}", exc_info=True)
-
-            # Create evaluation
-            evaluation_id = evaluation_service.calculate_evaluation_from_transcript(
-                booking_token=booking_token,
-                room_name=room_name,
-                transcript=transcript,
-                token_usage=token_usage,
-            )
-            
-            if evaluation_id:
-                logger.info(f"✅ [FINALIZE] Evaluation created: {evaluation_id}")
-                print(f"✅ [FINALIZE] Evaluation created: {evaluation_id}", flush=True)
-            else:
-                logger.warning("⚠️  [FINALIZE] Failed to create evaluation")
-        else:
-            logger.warning("⚠️  [FINALIZE] No booking token available, skipping evaluation creation")
-    except Exception as e:
-        logger.warning(f"⚠️  [FINALIZE] Error creating evaluation: {e}", exc_info=True)
-        print(f"⚠️  [FINALIZE] Error creating evaluation: {e}", flush=True)
-
-
-async def _fetch_candidate_profile(
-    room: rtc.Room, config: Config, booking_token: Optional[str] = None
-) -> Optional[dict]:
-    """
-    Fetch candidate application profile from MongoDB student_application_forms.
-    Used to replace placeholders like {full_name}, {email}, {aadhaar_number} in agent context.
-
-    Flow: booking_token -> interview_bookings (get user_id) -> student_application_forms (get form by user_id).
-
-    Args:
-        room: LiveKit room instance (used for metadata fallback)
-        config: App config
-        booking_token: From room name (interview_<token>) or room metadata
-
-    Returns:
-        Flat dict of application form fields (full_name, email, etc.) or None
-    """
-    try:
-        user_id = None
-
-        # 1) Prefer booking_token: get user_id from interview_bookings, then form from student_application_forms
-        booking = None
-        if booking_token:
-            try:
-                from app.services.booking_service import BookingService  # type: ignore
-                from app.services.application_form_service import ApplicationFormService  # type: ignore
-                booking_service = BookingService(config)
-                form_service = ApplicationFormService(config)
-                booking = booking_service.get_booking(booking_token)
-                if booking and booking.get("user_id"):
-                    user_id = str(booking["user_id"]).strip()
-                    form = form_service.get_form_by_user_id(user_id)
-                    if form:
-                        # If form exists but missing full_name, use booking.name as fallback
-                        if not form.get("full_name") and booking.get("name"):
-                            form["full_name"] = booking.get("name")
-                            logger.info(f"[OK] Candidate profile from form + booking name fallback (user_id={user_id}, full_name={form.get('full_name', '')})")
-                        else:
-                            logger.info(f"[OK] Candidate profile from student_application_forms (user_id={user_id}, full_name={form.get('full_name', '')})")
-                        print(f"[OK] Candidate profile loaded for placeholders (e.g. {{full_name}})", flush=True)
-                        return form
-                    # No form found - build minimal profile from booking
-                    if booking.get("name") or booking.get("email"):
-                        minimal_profile = {}
-                        if booking.get("name"):
-                            minimal_profile["full_name"] = booking.get("name")
-                        if booking.get("email"):
-                            minimal_profile["email"] = booking.get("email")
-                        logger.info(f"[OK] Candidate profile from booking (no form found, using booking name: {minimal_profile.get('full_name', 'N/A')})")
-                        print(f"[OK] Candidate profile from booking (name: {minimal_profile.get('full_name', 'N/A')})", flush=True)
-                        return minimal_profile if minimal_profile else None
-                    logger.debug(f"No application form for user_id={user_id} and no name in booking")
-            except ImportError as e:
-                logger.debug(f"Services not available: {e}")
-            except Exception as e:
-                logger.warning(f"[WARN]  Fetch candidate profile via booking: {e}")
-
-        # 2) Fallback: user_id or form_id from room metadata
-        if hasattr(room, 'metadata') and room.metadata:
-            try:
-                metadata = json.loads(room.metadata)
-                user_id = user_id or metadata.get('user_id') or metadata.get('userId')
-                if user_id:
-                    from app.services.application_form_service import ApplicationFormService  # type: ignore
-                    form_service = ApplicationFormService(config)
-                    form = form_service.get_form_by_user_id(str(user_id))
-                    if form:
-                        logger.info(f"[OK] Candidate profile from metadata user_id={user_id}")
-                        return form
-            except (json.JSONDecodeError, ImportError):
-                pass
-            except Exception as e:
-                logger.warning(f"[WARN]  Fetch candidate profile from metadata: {e}")
-
-        # 3) Final fallback: if we have booking but no user_id/form, use booking.name
-        if booking and (booking.get("name") or booking.get("email")):
-            minimal_profile = {}
-            if booking.get("name"):
-                minimal_profile["full_name"] = booking.get("name")
-            if booking.get("email"):
-                minimal_profile["email"] = booking.get("email")
-            logger.info(f"[OK] Candidate profile from booking (no user_id/form, using booking name: {minimal_profile.get('full_name', 'N/A')})")
-            print(f"[OK] Candidate profile from booking (name: {minimal_profile.get('full_name', 'N/A')})", flush=True)
-            return minimal_profile if minimal_profile else None
-
-        if not user_id:
-            logger.info("📄 No booking_token or user_id — placeholders like {full_name} will not be replaced")
-    except Exception as e:
-        logger.warning(f"[WARN]  Error fetching candidate profile: {e}")
-    return None
-
-
-def _setup_session_event_handlers(
-    session: agents.AgentSession,
-    logger,
-    booking_token: str = None,
-    room_name: str = None,
-    transcript_storage = None,
-    ctx: Optional[JobContext] = None,
-) -> None:
-    """
-    Setup event handlers on AgentSession to track user speech and agent replies.
-    
-    This helps debug the STT → LLM → TTS pipeline.
-    ctx is used to publish user transcripts to the frontend via data channel.
-    """
-    @session.on("user_state_changed")
-    def on_user_state_changed(event):
-        try:
-            old_state = event.old_state if hasattr(event, 'old_state') else 'unknown'
-            new_state = event.new_state if hasattr(event, 'new_state') else 'unknown'
-            logger.debug(f"👤 [USER STATE] {old_state} → {new_state}")
-            
-            if new_state == "speaking":
-                logger.debug("🎤 [STT] User started speaking (VAD detected)")
-            elif new_state == "listening":
-                logger.debug("🔇 [STT] User stopped speaking (VAD detected silence)")
-        except Exception as e:
-            logger.debug(f"Error in user_state_changed handler: {e}")
-    
-    @session.on("agent_state_changed")
-    def on_agent_state_changed(event):
-        try:
-            old_state = event.old_state if hasattr(event, 'old_state') else 'unknown'
-            new_state = event.new_state if hasattr(event, 'new_state') else 'unknown'
-            logger.debug(f"🤖 [AGENT STATE] {old_state} → {new_state}")
-            
-            if new_state == "thinking":
-                logger.debug("💭 [LLM] Agent started thinking (generating reply)")
-            elif new_state == "speaking":
-                logger.debug("🔊 [TTS] Agent started speaking (audio playing)")
-            elif new_state == "listening":
-                logger.debug("👂 [AGENT] Agent is listening (ready for user input)")
-        except Exception as e:
-            logger.debug(f"Error in agent_state_changed handler: {e}")
-    
-    @session.on("user_input_transcribed")
-    def on_user_input_transcribed(event):
-        try:
-            transcript = getattr(event, 'transcript', '') or ''
-            is_final = getattr(event, 'is_final', False)
-            status = "FINAL" if is_final else "INTERIM"
-            logger.debug(f"📝 [STT] Transcript ({status}): '{transcript}'")
-
-            # Save user transcript to database if final
-            if is_final and transcript and transcript_storage and booking_token:
-                try:
-                    from datetime import datetime
-                    # Get current max index to ensure proper ordering
-                    existing_transcripts = transcript_storage.get_transcript(booking_token)
-                    next_index = max([t.get('index', 0) for t in existing_transcripts], default=-1) + 1
-                    
-                    transcript_storage.save_transcript_message(
-                        booking_token=booking_token,
-                        room_name=room_name,
-                        role="user",
-                        content=transcript,
-                        message_index=next_index,
-                        timestamp=datetime.utcnow(),
-                    )
-                    logger.debug(f"✅ Saved user transcript to database (index: {next_index})")
-                except Exception as e:
-                    logger.warning(f"Failed to save user transcript: {e}")
-            
-            # Send final user transcript to frontend via data channel so it shows in transcript UI
-            if is_final and transcript and ctx and ctx.room.isconnected():
-                try:
-                    loop = asyncio.get_running_loop()
-                    async def _publish_user_transcript():
-                        try:
-                            payload = json.dumps({"type": "userTranscript", "message": transcript}).encode("utf-8")
-                            await ctx.room.local_participant.publish_data(
-                                payload, topic="lk-chat", reliable=True
-                            )
-                            logger.debug("Sent user transcript to frontend via data channel")
-                        except Exception as e:
-                            logger.warning(f"Failed to send user transcript to frontend: {e}")
-                    loop.create_task(_publish_user_transcript())
-                except RuntimeError:
-                    logger.debug("No running event loop for user transcript publish (skipping data channel)")
-                except Exception as e:
-                    logger.warning(f"Could not schedule user transcript send: {e}")
-            if is_final:
-                logger.debug("[OK] [STT] Final transcript received - will trigger LLM")
-        except Exception as e:
-            logger.error(f"[ERR] Error in user_input_transcribed handler: {e}", exc_info=True)
-            print(f"[ERR] Error in user_input_transcribed handler: {e}")
-    
-    @session.on("error")
-    def on_error(event):
-        try:
-            error_msg = str(event) if event else "Unknown error"
-            logger.error(f"[ERR] [SESSION ERROR] {error_msg}")
-            print(f"[ERR] [SESSION ERROR] {error_msg}")
-        except Exception as e:
-            logger.error(f"[ERR] Error in error handler: {e}", exc_info=True)
-    
-    @session.on("conversation_item_added")
-    def on_conversation_item_added(item):
-        try:
-            role = getattr(item, 'role', 'unknown')
-            content = getattr(item, 'content', '')
-            logger.debug(f"💬 [CONVERSATION] {role.upper()} message added")
-            if role == "user" and content:
-                logger.debug(f"   User said: {content}")
-        except Exception as e:
-            logger.debug(f"Error in conversation_item_added handler: {e}")
-    
-    @session.on("speech_created")
-    def on_speech_created(event):
-        try:
-            speech_id = getattr(event, 'speech', {}).get('id', 'unknown') if hasattr(event, 'speech') else 'unknown'
-            logger.info(f"🗣️  [TTS] Speech created")
-            print(f"🗣️  [TTS] Speech created")
-        except Exception as e:
-            logger.debug(f"Error in speech_created handler: {e}")
-    
-    @session.on("metrics_collected")
-    def on_metrics_collected(event):
-        try:
-            metrics = getattr(event, 'metrics', None)
-            if metrics:
-                stt_latency = getattr(metrics, 'stt_latency', 0)
-                llm_latency = getattr(metrics, 'llm_latency', 0)
-                tts_latency = getattr(metrics, 'tts_latency', 0)
-                # Only log when at least one latency is non-zero (avoids spam when idle)
-                if stt_latency or llm_latency or tts_latency:
-                    logger.info(f"📊 [METRICS] STT: {stt_latency:.3f}s, LLM: {llm_latency:.3f}s, TTS: {tts_latency:.3f}s")
-                    print(f"📊 [METRICS] STT: {stt_latency:.3f}s, LLM: {llm_latency:.3f}s, TTS: {tts_latency:.3f}s")
-        except Exception as e:
-            logger.debug(f"Error in metrics_collected handler: {e}")
-    
-    logger.info("[OK] Session event handlers installed for speech tracking")
-    print("[OK] Session event handlers installed for speech tracking")
-
-
-def _setup_participant_handlers(ctx: JobContext, room_sid: str) -> None:
-    """
-    Setup event handlers for participant and track events.
-    
-    Args:
-        ctx: JobContext instance
-        room_sid: Room SID for logging
-    """
-    room_sid_storage = {"sid": room_sid}
-    
-    @ctx.room.on("participant_connected")
-    def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
-        total = len(ctx.room.remote_participants) + 1
-        participant_type = (
-            "Agent" if "agent" in participant.identity.lower() else "User"
-        )
-        
-        logger.info("─" * 60)
-        logger.info("[OK] NEW PARTICIPANT JOINED")
-        logger.info("─" * 60)
-        logger.info(f"   Room SID: {room_sid_storage['sid']}")
-        logger.info(f"   Room Name: {ctx.room.name}")
-        logger.info(f"   Identity: {participant.identity}")
-        logger.info(f"   SID: {participant.sid}")
-        logger.info(f"   Name: {participant.name}")
-        logger.info(f"   Type: {participant_type}")
-        logger.info(f"   📊 UPDATED PARTICIPANT COUNT: Total: {total}")
-        logger.info("─" * 60)
-    
-    @ctx.room.on("participant_disconnected")
-    def on_participant_disconnected(
-        participant: rtc.RemoteParticipant,
-        reason: Optional[str] = None
-    ) -> None:
-        total = len(ctx.room.remote_participants) + 1
-        participant_type = (
-            "Agent" if "agent" in participant.identity.lower() else "User"
-        )
-        
-        logger.info("─" * 60)
-        logger.info("[ERR] PARTICIPANT LEFT")
-        logger.info("─" * 60)
-        logger.info(f"   Room SID: {room_sid_storage['sid']}")
-        logger.info(f"   Room Name: {ctx.room.name}")
-        logger.info(f"   Identity: {participant.identity}")
-        logger.info(f"   SID: {participant.sid}")
-        logger.info(f"   Name: {participant.name}")
-        logger.info(f"   Type: {participant_type}")
-        logger.info(f"   Reason: {reason if reason else 'Unknown'}")
-        logger.info(f"   📊 UPDATED PARTICIPANT COUNT: Total: {total}")
-        logger.info("─" * 60)
-    
-    @ctx.room.on("track_published")
-    def on_track_published(
-        publication: rtc.TrackPublication,
-        participant: rtc.Participant
-    ) -> None:
-        track_name = get_track_source_name(publication.source)
-        logger.info(f"🎤 TRACK PUBLISHED:")
-        logger.info(f"   Participant: {participant.identity}")
-        logger.info(f"   Track Type: {track_name}")
-        logger.info(f"   Room: {ctx.room.name}")
-    
-    @ctx.room.on("track_subscribed")
-    def on_track_subscribed(
-        track: rtc.Track,
-        publication: rtc.TrackPublication,
-        participant: rtc.Participant
-    ) -> None:
-        track_name = get_track_source_name(publication.source)
-        logger.info(f"👂 TRACK SUBSCRIBED:")
-        logger.info(f"   Participant: {participant.identity}")
-        logger.info(f"   Track Type: {track_name}")
-        logger.info(f"   Room: {ctx.room.name}")
-
-
-if __name__ == "__main__":
-    import sys
-    
-    logger.info("=" * 60)
-    logger.info("[DEV] AGENT WORKER STARTING")
-    logger.info("=" * 60)
-    
-    config = get_config()
-    
-    # Determine mode from command line arguments
-    mode = sys.argv[1] if len(sys.argv) > 1 else "production"
-    
-    if mode == "console":
-        logger.warning("[WARN]  CONSOLE MODE DETECTED - This is for local testing only!")
-        logger.warning("[WARN]  Console mode uses mock rooms and won't connect to LiveKit Cloud!")
-        print("\n[WARN]  WARNING: Running in CONSOLE MODE (local testing only)")
-        print("[WARN]  This won't connect to LiveKit Cloud rooms!\n")
-    elif mode == "dev":
-        logger.info("[DEV] Running in DEV MODE (connects to LiveKit Cloud)")
-        print("[DEV] Running in DEV MODE (connects to LiveKit Cloud)")
-    else:
-        logger.info("[PROD] Running in PRODUCTION MODE (connects to LiveKit Cloud)")
-        print("[PROD] Running in PRODUCTION MODE (connects to LiveKit Cloud)")
-    
-    logger.info(f"   Agent Name: '{config.livekit.agent_name}'")
-    logger.info(f"   Mode: {mode}")
-    logger.info(f"   Status: Registering with LiveKit Cloud...")
-    logger.info(f"   Waiting for job dispatch...")
-    logger.info("=" * 60)
-    
-    agents.cli.run_app(agents.WorkerOptions(
-        entrypoint_fnc=entrypoint,
-        agent_name=config.livekit.agent_name,
-    ))
