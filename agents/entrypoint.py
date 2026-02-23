@@ -289,8 +289,11 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception as e:
             logger.warning(f"Could not get transcript storage service: {e}")
         
-        # Store interview start time for duration calculation
+        # Interview timing: timer starts when candidate joins (see interview_loop).
+        # Placeholder start; loop will set resolved_start_time when candidate joins.
         interview_start_time = get_now_ist()
+        slot_start_ist_loop = None  # For join-delay: when slot/booking was scheduled to start
+        scheduled_duration_minutes = 30  # 30 or 45 for phase template
         
         # Get booking data to determine interview duration limit
         interview_duration_minutes = 30  # Default duration
@@ -324,6 +327,7 @@ async def entrypoint(ctx: JobContext) -> None:
                                         duration_seconds = (slot_end_ist - slot_start_ist).total_seconds()
                                         interview_duration_minutes = int(duration_seconds / 60)
                                         scheduled_end_time = slot_end_ist
+                                        slot_start_ist_loop = slot_start_ist  # For late-join: actual_duration = scheduled - join_delay
                                         # Enforce minimum 30 min so interview does not end early (e.g. 15-min slot data error)
                                         if interview_duration_minutes < 30:
                                             logger.warning(f"⏰ Slot duration {interview_duration_minutes} min < 30; using 30 min from start")
@@ -344,6 +348,7 @@ async def entrypoint(ctx: JobContext) -> None:
                             else:
                                 scheduled_at = datetime.fromisoformat(scheduled_at_str)
                             scheduled_at_ist = to_ist(scheduled_at)
+                            slot_start_ist_loop = scheduled_at_ist  # For late-join calculation
                             # Default interview duration: 30 minutes; end time in IST for correct comparison
                             scheduled_end_time = scheduled_at_ist + timedelta(minutes=interview_duration_minutes)
                             logger.info(f"⏰ Interview scheduled: {scheduled_at_ist} IST, will end at: {scheduled_end_time} ({interview_duration_minutes} min duration)")
@@ -352,20 +357,15 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception as e:
                 logger.warning(f"Could not fetch booking for duration: {e}")
         
-        if scheduled_end_time:
-            logger.info(f"⏰ Interview time limit: {interview_duration_minutes} minutes (ends at {scheduled_end_time})")
-        else:
-            logger.info(f"⏰ Using default interview duration: {interview_duration_minutes} minutes from start")
+        # Phase template: 30 or 45 minutes (for dynamic phase allocation when candidate joins)
+        scheduled_duration_minutes = 45 if interview_duration_minutes >= 45 else 30
         
-        # Set session time in context so LLM wrapper can inject "current minute X of Y" into chat context
-        try:
-            from agents.session_time import set_session_time
-            from services.session_time_store import set_store
-            set_session_time(interview_start_time, interview_duration_minutes)
-            set_store(interview_start_time, interview_duration_minutes)
-            logger.info(f"⏰ Session time context set: {interview_duration_minutes} min (LLM will receive current minute each turn)")
-        except Exception as e:
-            logger.warning(f"Could not set session time context: {e}")
+        if scheduled_end_time:
+            logger.info(f"⏰ Interview time limit: {interview_duration_minutes} minutes (ends at {scheduled_end_time}); timer starts when candidate joins")
+        else:
+            logger.info(f"⏰ Using default interview duration: {interview_duration_minutes} minutes from start; timer starts when candidate joins")
+        
+        # Session time store is set by interview_loop when candidate joins (so timer starts on join)
         
         # Step 5: Turn detection - Using VAD only
         logger.info("Step 5: Initializing Turn Detection...")
@@ -413,6 +413,13 @@ async def entrypoint(ctx: JobContext) -> None:
         
         if booking_prompt:
             agent_instructions += f"\n\nIMPORTANT INTERVIEW INSTRUCTIONS FROM RECRUITER:\n{booking_prompt}"
+
+        # Conditional coding: only ask coding/technical questions if role or interview type requires it
+        agent_instructions += (
+            "\n\nCONDITIONAL CODING: Ask coding/technical questions ONLY if the role requires technical evaluation "
+            "or the interview type includes coding or programming problems (e.g. recruiter instructions or prompt mention technical/coding evaluation or programming problems). "
+            "Programming problems means you should ask coding questions. Otherwise skip the coding phase and use that time for MCQ and logical reasoning."
+        )
 
         if not agent_instructions:
             logger.info("[INFO] No custom instructions or prompt found - using Agent defaults")
@@ -635,6 +642,8 @@ async def entrypoint(ctx: JobContext) -> None:
             room_name=room_name,
             plugins=plugins,
             config=config,
+            slot_start_ist=slot_start_ist_loop,
+            scheduled_duration_minutes=scheduled_duration_minutes,
         )
 
         logger.info("=" * 60)

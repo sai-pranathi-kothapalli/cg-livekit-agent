@@ -3,6 +3,8 @@ Professional Arjun Agent
 
 LiveKit agent for structured technical interviews with optional
 candidate context and dashboard-driven instructions.
+Uses phase-based prompt (Phase 1: Intro, Phase 2: Technical/Coding/Scenario, Phase 3: MCQ & Closing)
+when no dashboard instructions exist; otherwise uses provided base_instructions.
 """
 
 from typing import Optional, Dict, Any
@@ -12,6 +14,8 @@ from livekit.agents import Agent
 
 from app.utils.logger import get_logger  # type: ignore
 
+from agents.phase_based_interview_prompt import PHASE_BASED_INTERVIEW_DEFAULT
+
 logger = get_logger(__name__)
 
 
@@ -19,12 +23,11 @@ class ProfessionalArjun(Agent):
     """
     Professional Arjun - technical interview agent.
 
-    Uses TECHNICAL_INTERVIEW_DEFAULT when no dashboard instructions exist;
+    Uses PHASE_BASED_INTERVIEW_DEFAULT (Phase 1 / 2 / 3 prompts) when no dashboard instructions exist;
     otherwise uses provided base_instructions (e.g. from system_instructions table).
     """
     
-    # Default instructions when no system_instructions from dashboard/DB (technical interview).
-    # Placeholders: {full_name}, {email}, {graduation_degree}, {skills}
+    # Legacy default (kept for reference); primary default is PHASE_BASED_INTERVIEW_DEFAULT
     TECHNICAL_INTERVIEW_DEFAULT = """
 ## CANDIDATE CONTEXT (use for greeting and personalization)
 - Name: {full_name}
@@ -394,7 +397,7 @@ The quality benchmark:
         """
         use_technical_default = not base_instructions
         if use_technical_default:
-            base_instructions_text = self.TECHNICAL_INTERVIEW_DEFAULT
+            base_instructions_text = PHASE_BASED_INTERVIEW_DEFAULT
             # Substitute candidate block placeholders
             prof = candidate_profile or {}
             def safe_get(key):
