@@ -1,12 +1,14 @@
 """
 Timing LLM Wrapper
 
-Wraps LLM chat to add performance timing logs without modifying backend code.
+Wraps LLM chat to add performance timing logs and to sanitize agent output
+(strip internal context like MINUTE. / Phase: so it is never spoken or shown).
 """
 
 import time
 from typing import Any, Callable, AsyncContextManager
 from agents.utils import PerformanceTimer, logger, log_turn_start, log_turn_end, log_tts_start
+from services.output_sanitizer import OutputSanitizerState, _make_chunk_with_content
 
 
 class TimingLLMWrapper:
@@ -69,6 +71,7 @@ class TimingContextWrapper:
         self._total_chars = 0
         self._tts_timer = None
         self._token_logged = False  # avoid double log when both __anext__(StopAsyncIteration) and __aexit__ run
+        self._sanitizer_state = None  # set in __aenter__
     
     async def __aenter__(self):
         """Enter the original context manager and start timing"""
@@ -76,6 +79,7 @@ class TimingContextWrapper:
         self._first_chunk = False
         self._chunk_count = 0
         self._total_chars = 0
+        self._sanitizer_state = OutputSanitizerState()
         
         # ✅ EXPLICIT: We are about to call the LLM (Gemini or fallback)
         logger.info("🔵 [LLM] Entering chat context - calling Gemini (or fallback)...")
@@ -180,11 +184,10 @@ class TimingContextWrapper:
             pass
 
     async def __anext__(self):
-        """Iterate and track timing"""
+        """Iterate and track timing; sanitize output to strip internal context."""
         try:
             chunk = await self._cm.__anext__()
-            
-            # ✅ CHECKPOINT: First chunk (TTFB) - Gemini has responded
+
             if not self._first_chunk and self._timer:
                 self._first_chunk = True
                 self._timer.checkpoint("First chunk (TTFB)")
@@ -194,13 +197,10 @@ class TimingContextWrapper:
                     print("🔵 [LLM] Gemini first chunk received (TTFB) - stream started", flush=True)
                 except Exception:
                     pass
-            
-            # Track chunk stats
+
             self._chunk_count += 1
-            
-            # Extract text length from various chunk shapes (LiveKit ChatChunk, Google GenAI, etc.)
+
             chunk_text = ""
-            # LiveKit ChatChunk (used by Gemini plugin): chunk.delta.content
             delta = getattr(chunk, "delta", None)
             if delta is not None and getattr(delta, "content", None):
                 c = delta.content
@@ -212,19 +212,16 @@ class TimingContextWrapper:
             elif isinstance(chunk, str):
                 chunk_text = chunk
             elif getattr(chunk, "choices", None):
-                # OpenAI-style: choices[0].delta.content
                 choices = chunk.choices
                 if choices and len(choices) > 0:
                     d = getattr(choices[0], "delta", None)
                     if d and hasattr(d, "content") and d.content:
                         chunk_text = d.content if isinstance(d.content, str) else ""
             elif getattr(chunk, "parts", None):
-                # Google GenAI: parts[].text
                 for part in chunk.parts:
                     if hasattr(part, "text") and part.text:
                         chunk_text += part.text if isinstance(part.text, str) else ""
             elif getattr(chunk, "candidates", None):
-                # Google GenAI GenerateContentResponse: candidates[0].content.parts[0].text
                 cands = chunk.candidates
                 if cands and len(cands) > 0:
                     content = getattr(cands[0], "content", None)
@@ -232,11 +229,22 @@ class TimingContextWrapper:
                         for part in content.parts:
                             if hasattr(part, "text") and part.text:
                                 chunk_text += part.text if isinstance(part.text, str) else ""
+
+            # Strip internal context only when we actually see the marker; otherwise pass through so TTS gets audio
+            if self._sanitizer_state.should_passthrough():
+                if chunk_text:
+                    self._total_chars += len(chunk_text)
+                return chunk
+            self._sanitizer_state.add(chunk_text)
+            after = self._sanitizer_state.take_after_marker()
+            if after:
+                self._total_chars += len(after)
+                return _make_chunk_with_content(after, chunk)
+            # No marker seen yet: pass through original chunk so TTS is audible (don't return empty)
             if chunk_text:
                 self._total_chars += len(chunk_text)
-            
             return chunk
-            
+
         except StopAsyncIteration:
             # Log tokens when stream ends (LiveKit may not call __aexit__, so we log here too)
             self._log_token_usage()

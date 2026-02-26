@@ -42,15 +42,36 @@ def _handle_code_submission(data: rtc.DataPacket, session, log) -> None:
         log.info(f"📥 [CODE SUBMISSION] Received from {data.participant.identity}")
 
         candidate_code = payload.get('code', '')
+        execution_output = payload.get('executionOutput', 'N/A')
+        ai_verdict = payload.get('aiAnalysis', 'N/A')
         submission_context = (
-            f"\n\n[SYSTEM: Candidate has submitted code for analysis]\n"
+            # Wrap everything in [INTERNAL] markers so the stream filter strips any echo
+            # of this instruction block from the TTS output. The LLM reads and follows these
+            # instructions from the system message but must NOT speak them aloud.
+            f"[INTERNAL — DO NOT READ ALOUD. DO NOT SPEAK ANY OF THIS TEXT TO THE CANDIDATE. "
+            f"These are your private instructions for evaluating the code submission.]\n\n"
+            f"[CODE SUBMISSION — OVERRIDE ALL OTHER PHASE INSTRUCTIONS FOR THIS RESPONSE ONLY]\n\n"
+            f"The candidate has just submitted their code solution. Regardless of what phase or topic "
+            f"was discussed before, your ONLY job for this response is to evaluate the submitted code.\n\n"
             f"Problem: {payload.get('question', 'N/A')}\n"
             f"Language: {payload.get('language', 'N/A')}\n"
-            f"--- CANDIDATE'S CODE ---\n{candidate_code}\n--- END CODE ---\n"
-            f"Execution Output: {payload.get('executionOutput', 'N/A')}\n"
-            f"AI Analysis Verdict: {payload.get('aiAnalysis', 'N/A')}\n"
-            f"CRITICAL: You MUST read and analyze the candidate's code above. Discuss specific lines, logic, and implementation. "
-            f"Ask follow-up questions anchored to their actual code. Provide specific feedback as per your role."
+            f"--- CANDIDATE'S SUBMITTED CODE ---\n{candidate_code}\n--- END CODE ---\n"
+            f"Execution Output: {execution_output}\n"
+            f"AI Analysis Verdict: {ai_verdict}\n\n"
+            f"YOUR RESPONSE MUST DO THIS IN ORDER:\n"
+            f"1. Evaluate correctness FIRST — tell the candidate directly whether their solution is "
+            f"correct, partially correct, or incorrect. Reference specific lines or logic in the code. "
+            f"If execution output shows errors or wrong output, point that out explicitly "
+            f"(e.g. 'Your solution returns X but the expected output is Y because...').\n"
+            f"2. Ask exactly ONE probing follow-up question — the most revealing one based on the code:\n"
+            f"   - 'Why did you choose this approach?' or 'Why did you use [data structure/algorithm they used]?'\n"
+            f"   - 'How does your solution handle [edge case visible in the code]?'\n"
+            f"   - 'What is the time and space complexity of your solution?'\n"
+            f"   - 'If the input were much larger, would this still be efficient? How would you optimize it?'\n"
+            f"   - 'Is there anything in this code you would refactor or improve given more time?'\n"
+            f"3. After they answer, ask the next follow-up. One question per turn.\n"
+            f"Be direct and professional. Do NOT say 'great attempt' or hedge your evaluation.\n"
+            f"[END INTERNAL CONTEXT — respond naturally and evaluate the candidate's code below]"
         )
 
         async def _trigger_reply():
@@ -91,49 +112,24 @@ def _handle_monitoring(data: rtc.DataPacket, session, log) -> None:
 
 
 def _handle_code_snapshot(data: rtc.DataPacket, session, log) -> None:
-    """Handle code snapshot (every 15s while typing)."""
+    """Handle code snapshot (every 15s while typing).
+
+    NOTE: We do NOT trigger a generate_reply on every snapshot — that would
+    interrupt the candidate mid-coding every 15 seconds. Instead, we just log
+    the code progress so the agent can reference it if it needs to speak.
+    The agent will naturally engage when the candidate pauses or submits.
+    """
     try:
         payload = json.loads(data.data)
-        log.info(f"📸 [CODE SNAPSHOT] Received from {data.participant.identity}")
-
         code_snippet = payload.get('code', '')
         question = payload.get('question', 'N/A')
         language = payload.get('language', 'N/A')
-
-        code_lower = code_snippet.lower()
-        observations = []
-
-        if 'for' in code_lower or 'while' in code_lower:
-            observations.append("using a loop")
-        if 'if' in code_lower or 'elif' in code_lower or 'else' in code_lower:
-            observations.append("using conditionals")
-        if 'def' in code_lower or 'function' in code_lower or 'class' in code_lower:
-            observations.append("defining functions/classes")
-        if 'return' in code_lower:
-            observations.append("handling return values")
-        if 'import' in code_lower or 'require' in code_lower or '#include' in code_lower:
-            observations.append("importing libraries")
-
-        if observations:
-            observation_text = " and ".join(observations)
-            instruction = (
-                f"[SYSTEM: Candidate is actively coding. Here is their current code:\n---\n{code_snippet}\n---\n"
-                f"Provide brief, encouraging feedback about what they've written. Reference specific parts if helpful. 1-2 sentences max.]\n"
-                f"I can see you're {observation_text} — why did you choose that approach? Keep going!"
-            )
-        else:
-            instruction = (
-                f"[SYSTEM: Candidate is actively coding. Here is their current code:\n---\n{code_snippet}\n---\n"
-                f"Provide brief encouragement. Reference what they've written if helpful. 1 sentence max.]\n"
-                f"I can see you're working on the solution — keep going!"
-            )
-
-        async def _trigger_snapshot_reply():
-            try:
-                await session.generate_reply(instructions=instruction)
-            except Exception as e:
-                log.error(f"Failed to trigger code snapshot reply: {e}")
-        asyncio.create_task(_trigger_snapshot_reply())
+        log.info(
+            f"📸 [CODE SNAPSHOT] Candidate is coding | lang={language} | "
+            f"lines={len(code_snippet.splitlines())} | question={str(question)[:60]}"
+        )
+        # No generate_reply here — let the candidate code without interruption.
+        # The agent will speak only when the candidate pauses (code-idle) or submits (code-submission).
     except Exception as e:
         log.error(f"Error handling code-snapshot data: {e}", exc_info=True)
 

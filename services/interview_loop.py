@@ -1,6 +1,7 @@
 """
-Interview time loop - monitors duration, sends time updates, phase-boundary instructions,
-triggers wrap-up/conclude/closing. Timer starts when candidate joins; duration adjusts for late join.
+Interview time loop — monitors duration, sends time updates, triggers wrap-up and closing.
+Timer starts when candidate sends first message (interview_started_at set in TimeContextLLMWrapper).
+All timing uses utils.interview_timer; no phase state machine.
 """
 
 import asyncio
@@ -12,13 +13,11 @@ from livekit.agents import JobContext
 
 from app.utils.datetime_utils import get_now_ist  # type: ignore
 from app.utils.logger import get_logger  # type: ignore
-
-from utils.phase_timing import get_phase_durations, get_phase_boundaries
+from utils.interview_timer import get_time_remaining, get_interview_focus  # type: ignore
 
 logger = get_logger(__name__)
 
-# Minimum interview length when candidate joins very late
-MIN_ACTUAL_DURATION_MINUTES = 5
+MIN_ACTUAL_DURATION_MINUTES = 25
 
 
 async def run_interview_time_loop(
@@ -36,153 +35,97 @@ async def run_interview_time_loop(
 ) -> None:
     """
     Run the main time loop until interview ends or room disconnects.
-    Timer starts when candidate joins; actual_duration = scheduled_duration - join_delay.
-    Sends phase-boundary SYSTEM instructions (intro → technical → MCQ → conclusion).
+    Timer starts when candidate sends first message (interview_started_at set in TimeContextLLMWrapper).
+    Uses centralized get_time_remaining and get_interview_focus; no phase state machine.
     Always calls finalize_interview in finally block.
     """
-    warning_sent = False
-    wrapping_up_instruction_sent = False
     conclude_instruction_sent = False
     closing_triggered = False
     interview_time_limit_reached = False
-    last_time_update = None  # set after candidate joins
-    intro_end_sent = False
-    technical_end_sent = False
-    mcq_end_sent = False
-
-    # Resolved at candidate join (or kept from args if no dynamic timing)
+    last_time_update = None
     resolved_start_time = interview_start_time
     resolved_duration_minutes = interview_duration_minutes
-    resolved_end_time = scheduled_end_time
-    phase_durations: Dict[str, int] = {}
-    intro_end_min = 0.0
-    technical_end_min = 0.0
-    mcq_end_min = 0.0
+    resolved_end_time: Optional[datetime] = None
     candidate_joined = False
 
-    # Base template for phase ratio: 30 or 45
     base_template = "45" if (scheduled_duration_minutes or interview_duration_minutes) >= 45 else "30"
-    sched_duration = scheduled_duration_minutes if scheduled_duration_minutes is not None else interview_duration_minutes
 
     try:
         while ctx.room.isconnected() and not interview_time_limit_reached:
             current_time_ist = get_now_ist()
 
-            # Wait for candidate to join before starting timer and phase logic
             if not candidate_joined:
                 if len(ctx.room.remote_participants) > 0:
                     candidate_join_time = current_time_ist
-                    join_delay_minutes = 0.0
-                    if slot_start_ist is not None:
-                        join_delay_minutes = max(
-                            0.0,
-                            (candidate_join_time - slot_start_ist).total_seconds() / 60.0,
-                        )
-                    actual_duration = max(
-                        MIN_ACTUAL_DURATION_MINUTES,
-                        sched_duration - int(join_delay_minutes),
-                    )
-                    resolved_start_time = candidate_join_time
+                    # Coerce to int (entrypoint may pass int/float; DB might be float)
+                    duration_int = int(interview_duration_minutes)
+                    actual_duration = max(duration_int, MIN_ACTUAL_DURATION_MINUTES)
                     resolved_duration_minutes = actual_duration
-                    resolved_end_time = candidate_join_time + timedelta(minutes=actual_duration)
-                    last_time_update = candidate_join_time
-                    candidate_joined = True
-
-                    phase_durations = get_phase_durations(actual_duration, base_template)
-                    intro_end_min, technical_end_min, mcq_end_min = get_phase_boundaries(phase_durations)
-
                     try:
-                        from agents.session_time import set_session_time
-                        from services.session_time_store import set_store
+                        from services.session_time_store import set_store_duration_only
                         from app.services.history_managed_llm_wrapper import reset_questions_asked  # type: ignore
-                        set_session_time(resolved_start_time, resolved_duration_minutes)
-                        set_store(resolved_start_time, resolved_duration_minutes, base_template)
+                        set_store_duration_only(actual_duration, base_template)
                         reset_questions_asked()
                     except Exception as e:
-                        logger.warning(f"Could not set session time store: {e}")
-
+                        logger.warning("Could not set session time store: %s", e)
+                    resolved_start_time = None
+                    resolved_end_time = None
+                    last_time_update = candidate_join_time
+                    candidate_joined = True
                     logger.info(
-                        f"⏰ Candidate joined: start={resolved_start_time}, actual_duration={actual_duration} min "
-                        f"(scheduled={sched_duration}, join_delay={join_delay_minutes:.1f} min). "
-                        f"Phases: intro={phase_durations['intro']}, technical={phase_durations['technical']}, "
-                        f"mcq={phase_durations['mcq']}, conclusion={phase_durations['conclusion']}"
+                        "⏰ Candidate joined: duration=%s min (start_time will be set on first message).",
+                        actual_duration,
                     )
                     print(
-                        f"⏰ Timer started on candidate join: {actual_duration} min (join delay: {join_delay_minutes:.1f} min)",
+                        f"⏰ Candidate joined — timer will start on first message (safe_duration={actual_duration} min)",
                         flush=True,
                     )
-                    # At start: instruct agent to begin with introduction
-                    try:
-                        await session.generate_reply(
-                            instructions="SYSTEM: Begin with introduction and background questions. Welcome the candidate and set the pace for the interview."
-                        )
-                        logger.info("✅ Sent start instruction: introduction phase")
-                    except Exception as e:
-                        logger.warning(f"⚠️  Could not send start instruction: {e}")
                 else:
                     await asyncio.sleep(2)
                     continue
 
-            elapsed_minutes = (current_time_ist - resolved_start_time).total_seconds() / 60
-            time_limit_reached = False
-            time_remaining_minutes = 0.0
-            if resolved_end_time:
-                time_remaining_minutes = (resolved_end_time - current_time_ist).total_seconds() / 60
-                past_end = current_time_ist >= resolved_end_time
-                at_least_90_pct = elapsed_minutes >= (resolved_duration_minutes * 0.9)
-                if past_end and at_least_90_pct:
-                    time_limit_reached = True
-                    logger.info(
-                        f"⏰ Interview time limit reached (end: {resolved_end_time}, elapsed: {elapsed_minutes:.1f} min)"
-                    )
+            if candidate_joined and resolved_start_time is None:
+                try:
+                    from services.session_time_store import get_store
+                    from agents.session_time import set_session_time
+                    store_start, store_dur, _ = get_store()
+                    if store_start is not None and store_dur is not None:
+                        resolved_start_time = store_start
+                        # Ensure int (store may have float if it came from DB)
+                        resolved_duration_minutes = max(int(store_dur), MIN_ACTUAL_DURATION_MINUTES)
+                        resolved_end_time = store_start + timedelta(minutes=resolved_duration_minutes)
+                        set_session_time(resolved_start_time, resolved_duration_minutes)
+                        logger.info(
+                            "⏰ Interview started at first message: start=%s, duration=%s min, end=%s",
+                            resolved_start_time,
+                            resolved_duration_minutes,
+                            resolved_end_time,
+                        )
+                except Exception as e:
+                    logger.debug("Could not resolve start time from store: %s", e)
+
+            if resolved_start_time is None:
+                await asyncio.sleep(2)
+                continue
+
+            remaining_min = get_time_remaining(resolved_start_time, resolved_duration_minutes, now=current_time_ist)
+            focus = get_interview_focus(remaining_min)
+            logger.info("Time remaining: %s min | Focus: %s", remaining_min, focus)
+
+            time_remaining_minutes = float(remaining_min)
+            # Use resolved_end_time as authoritative when set; only then use remaining_min/elapsed.
+            # This avoids premature end when remaining_min <= 0 due to any calc/timezone issue.
+            if resolved_end_time is not None:
+                time_limit_reached = current_time_ist >= resolved_end_time
+                if time_limit_reached:
+                    logger.info("⏰ Interview time limit reached (true end: %s)", resolved_end_time)
             else:
-                time_remaining_minutes = max(0, resolved_duration_minutes - elapsed_minutes)
-                if elapsed_minutes >= resolved_duration_minutes:
-                    time_limit_reached = True
-                    logger.info(
-                        f"⏰ Interview duration limit reached ({resolved_duration_minutes} minutes elapsed)"
-                    )
+                elapsed_minutes = (current_time_ist - resolved_start_time).total_seconds() / 60
+                time_limit_reached = elapsed_minutes >= resolved_duration_minutes
+                if time_limit_reached:
+                    logger.info("⏰ Interview duration limit reached (%s minutes elapsed)", resolved_duration_minutes)
 
-            # Phase-boundary SYSTEM instructions
-            if not intro_end_sent and elapsed_minutes >= intro_end_min and intro_end_min > 0:
-                intro_end_sent = True
-                try:
-                    msg = (
-                        "SYSTEM: Introduction phase is complete. "
-                        "Move to technical or expertise questions if the role requires technical evaluation or the interview includes coding. "
-                        "Otherwise move to MCQ and logical reasoning questions. Keep pacing natural."
-                    )
-                    await session.generate_reply(instructions=msg)
-                    logger.info(f"✅ Sent phase instruction: end of introduction (elapsed {elapsed_minutes:.1f} min)")
-                except Exception as e:
-                    logger.warning(f"⚠️  Could not send intro-end instruction: {e}")
-
-            if not technical_end_sent and elapsed_minutes >= technical_end_min and technical_end_min > 0:
-                technical_end_sent = True
-                try:
-                    msg = (
-                        "SYSTEM: Technical/coding phase is complete. "
-                        "Move to MCQ and logical reasoning questions. Keep to the question bank and time remaining."
-                    )
-                    await session.generate_reply(instructions=msg)
-                    logger.info(f"✅ Sent phase instruction: end of technical (elapsed {elapsed_minutes:.1f} min)")
-                except Exception as e:
-                    logger.warning(f"⚠️  Could not send technical-end instruction: {e}")
-
-            if not mcq_end_sent and elapsed_minutes >= mcq_end_min and mcq_end_min > 0:
-                mcq_end_sent = True
-                try:
-                    msg = (
-                        "SYSTEM: MCQ phase is complete. "
-                        "Begin wrapping up toward the conclusion. You will receive a final conclude instruction when 2 minutes remain."
-                    )
-                    await session.generate_reply(instructions=msg)
-                    logger.info(f"✅ Sent phase instruction: end of MCQ (elapsed {elapsed_minutes:.1f} min)")
-                except Exception as e:
-                    logger.warning(f"⚠️  Could not send mcq-end instruction: {e}")
-
-            # Send time remaining update every 10 seconds
-            if last_time_update is not None:
+            if last_time_update is not None and resolved_end_time is not None:
                 time_since_last_update = (current_time_ist - last_time_update).total_seconds()
                 if time_since_last_update >= 10:
                     try:
@@ -196,75 +139,36 @@ async def run_interview_time_loop(
                             reliable=False,
                         )
                         last_time_update = current_time_ist
-                        logger.debug(f"⏰ Sent time remaining update: {time_remaining_minutes:.1f} minutes")
+                        logger.debug("⏰ Sent time remaining update: %.1f minutes", time_remaining_minutes)
                     except Exception as e:
-                        logger.debug(f"⚠️  Failed to send time update: {e}")
+                        logger.debug("⚠️  Failed to send time update: %s", e)
 
-            # 5-minute warning to frontend
-            if not warning_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 5:
-                warning_sent = True
-                try:
-                    warning_message = json.dumps({
-                        "type": "interview_warning",
-                        "message": f"Interview will end in approximately {int(time_remaining_minutes)} minute(s). Please wrap up your responses.",
-                    }).encode("utf-8")
-                    await ctx.room.local_participant.publish_data(
-                        warning_message,
-                        topic="lk-chat",
-                        reliable=True,
-                    )
-                    logger.info(f"⚠️  Sent 5-minute warning ({time_remaining_minutes:.1f} min remaining)")
-                except Exception as e:
-                    logger.warning(f"⚠️  Failed to send warning: {e}")
+            if resolved_end_time is not None and not conclude_instruction_sent and 0 < remaining_min <= 1:
+                # Only send wrap-up when we're near the real end (avoids firing on timezone/calc glitches).
+                elapsed_so_far = (current_time_ist - resolved_start_time).total_seconds() / 60
+                if elapsed_so_far >= (resolved_duration_minutes - 2):
+                    conclude_instruction_sent = True
+                    try:
+                        await session.generate_reply(instructions="END_SOFT_WRAP")
+                        logger.info("✅ Sent END_SOFT_WRAP (~1 min left)")
+                        print("⏰ Conclude instruction sent (~1 min left)", flush=True)
+                    except Exception as e:
+                        logger.warning("⚠️  Could not send conclude instruction: %s", e)
 
-            # ~5 min remaining: wrapping up
-            if not wrapping_up_instruction_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 5:
-                wrapping_up_instruction_sent = True
-                try:
-                    wrapping_up_instructions = (
-                        f"SYSTEM: You have about {int(time_remaining_minutes)} minutes left. "
-                        "Tell the candidate we are wrapping up (e.g. 'We have about 5 minutes left' or 'We are coming to the end'). "
-                        "Ask one or two final questions from the question bank. Do NOT say full goodbye or thank them for their time yet; save that for when you receive END_INTERVIEW. "
-                        "Keep it natural and brief."
-                    )
-                    await session.generate_reply(instructions=wrapping_up_instructions)
-                    logger.info(f"✅ Sent wrapping-up instruction (~{int(time_remaining_minutes)} min left)")
-                    print(f"⏰ Wrapping-up instruction sent (~{int(time_remaining_minutes)} min left)", flush=True)
-                except Exception as e:
-                    logger.warning(f"⚠️  Could not send wrapping-up instruction: {e}")
-
-            # ~2 min remaining: conclude
-            if not conclude_instruction_sent and time_remaining_minutes > 0 and time_remaining_minutes <= 2:
-                conclude_instruction_sent = True
-                try:
-                    conclude_instructions = (
-                        f"SYSTEM: You have about {int(time_remaining_minutes)} minutes left. Do NOT ask any more questions. "
-                        "Say clearly that we are concluding (e.g. 'We have a couple of minutes left, so let us conclude.' or 'That brings us to the end.'). "
-                        "One short sentence only. Do NOT say full goodbye yet; you will receive END_INTERVIEW in a moment for that."
-                    )
-                    await session.generate_reply(instructions=conclude_instructions)
-                    logger.info(f"✅ Sent conclude instruction (~{int(time_remaining_minutes)} min left)")
-                    print(f"⏰ Conclude instruction sent (~{int(time_remaining_minutes)} min left)", flush=True)
-                except Exception as e:
-                    logger.warning(f"⚠️  Could not send conclude instruction: {e}")
-
-            # Trigger closing when time ends
             trigger_closing_now = time_limit_reached and not closing_triggered
             if trigger_closing_now:
                 closing_triggered = True
                 interview_time_limit_reached = True
+                elapsed_minutes = (current_time_ist - resolved_start_time).total_seconds() / 60
                 logger.info("⏰ Full interview duration reached - ending interview gracefully")
                 print("⏰ Full duration reached - ending interview", flush=True)
 
                 try:
-                    closing_instructions = """SYSTEM: END_INTERVIEW.
-
-You may now conclude the interview. Politely conclude in 2–3 sentences: thank the candidate, say the interview is complete, and that they will be redirected to the evaluation page where they can view results and feedback. Wish them well. Keep it brief and professional."""
-                    await session.generate_reply(instructions=closing_instructions)
+                    await session.generate_reply(instructions="END_INTERVIEW")
                     await asyncio.sleep(5)
                     logger.info("✅ Closing message completed")
                 except Exception as e:
-                    logger.warning(f"⚠️  Could not generate closing message: {e}")
+                    logger.warning("⚠️  Could not generate closing message: %s", e)
 
                 try:
                     completion_message = json.dumps({
@@ -281,7 +185,7 @@ You may now conclude the interview. Politely conclude in 2–3 sentences: thank 
                     logger.info("✅ Sent interview completion signal to frontend")
                     print("✅ Sent completion signal to frontend", flush=True)
                 except Exception as e:
-                    logger.warning(f"⚠️  Failed to send completion signal: {e}")
+                    logger.warning("⚠️  Failed to send completion signal: %s", e)
 
                 await asyncio.sleep(2)
 
@@ -290,16 +194,16 @@ You may now conclude the interview. Politely conclude in 2–3 sentences: thank 
                         from app.services.booking_service import BookingService  # type: ignore
                         booking_service = BookingService(config)
                         booking_service.update_booking_status(booking_token, "completed")
-                        logger.info(f"✅ Updated booking status to 'completed' for {booking_token}")
+                        logger.info("✅ Updated booking status to 'completed' for %s", booking_token)
                     except Exception as e:
-                        logger.warning(f"⚠️  Failed to update booking status: {e}")
+                        logger.warning("⚠️  Failed to update booking status: %s", e)
 
                 try:
                     logger.info("🔌 Disconnecting from room to end interview")
                     await ctx.room.disconnect()
                     logger.info("✅ Successfully disconnected from room")
                 except Exception as e:
-                    logger.warning(f"⚠️  Error disconnecting from room: {e}")
+                    logger.warning("⚠️  Error disconnecting from room: %s", e)
                 break
 
             if time_remaining_minutes <= 1:

@@ -312,30 +312,58 @@ async def entrypoint(ctx: JobContext) -> None:
                     if slot_id:
                         try:
                             slot = slot_service.get_slot(slot_id)
-                            if slot and slot.get('end_time'):
-                                # Calculate duration from slot
-                                slot_start_str = slot.get('start_time') or slot.get('slot_datetime')
-                                slot_end_str = slot.get('end_time')
-                                
-                                if slot_start_str and slot_end_str:
+                            if slot:
+                                # Prefer explicit duration_minutes (Supabase may return int or string)
+                                slot_duration = slot.get('duration_minutes')
+                                if slot_duration is not None:
                                     try:
-                                        slot_start = datetime.fromisoformat(slot_start_str.replace('Z', '+00:00'))
-                                        slot_end = datetime.fromisoformat(slot_end_str.replace('Z', '+00:00'))
-                                        # Normalize to IST so comparison with current_time_ist is correct (avoids early end from UTC vs IST)
-                                        slot_start_ist = to_ist(slot_start)
-                                        slot_end_ist = to_ist(slot_end)
-                                        duration_seconds = (slot_end_ist - slot_start_ist).total_seconds()
-                                        interview_duration_minutes = int(duration_seconds / 60)
-                                        scheduled_end_time = slot_end_ist
-                                        slot_start_ist_loop = slot_start_ist  # For late-join: actual_duration = scheduled - join_delay
-                                        # Enforce minimum 30 min so interview does not end early (e.g. 15-min slot data error)
-                                        if interview_duration_minutes < 30:
-                                            logger.warning(f"⏰ Slot duration {interview_duration_minutes} min < 30; using 30 min from start")
-                                            interview_duration_minutes = 30
-                                            scheduled_end_time = interview_start_time + timedelta(minutes=30)
-                                        logger.info(f"⏰ Using slot duration: {interview_duration_minutes} minutes (from slot {slot_id}), end at IST {scheduled_end_time}")
-                                    except Exception as e:
-                                        logger.warning(f"Could not parse slot times: {e}")
+                                        d = int(float(slot_duration))
+                                        if d >= 15:
+                                            interview_duration_minutes = d
+                                            logger.info(f"⏰ Using slot duration_minutes: {interview_duration_minutes} minutes (from slot {slot_id})")
+                                        else:
+                                            logger.warning(f"⏰ Slot duration_minutes={d} < 15; will enforce 30 min")
+                                    except (TypeError, ValueError):
+                                        logger.warning(f"⏰ Slot duration_minutes not usable: {slot_duration!r}, using default 30")
+                                elif slot.get('end_time'):
+                                    # Fallback: calculate from slot start/end (can be affected by timezone/booking values)
+                                    slot_start_str = slot.get('start_time') or slot.get('slot_datetime')
+                                    slot_end_str = slot.get('end_time')
+                                    if slot_start_str and slot_end_str:
+                                        try:
+                                            slot_start = datetime.fromisoformat(slot_start_str.replace('Z', '+00:00'))
+                                            slot_end = datetime.fromisoformat(slot_end_str.replace('Z', '+00:00'))
+                                            slot_start_ist = to_ist(slot_start)
+                                            slot_end_ist = to_ist(slot_end)
+                                            duration_seconds = (slot_end_ist - slot_start_ist).total_seconds()
+                                            interview_duration_minutes = int(duration_seconds / 60)
+                                            logger.info(f"⏰ Using duration from slot start/end: {interview_duration_minutes} minutes (slot {slot_id}; no duration_minutes on slot)")
+                                        except Exception as e:
+                                            logger.warning(f"Could not parse slot times: {e}")
+                                if slot.get('end_time'):
+                                    try:
+                                        slot_end_str = slot.get('end_time')
+                                        slot_start_str = slot.get('start_time') or slot.get('slot_datetime')
+                                        if slot_end_str:
+                                            slot_end = datetime.fromisoformat(slot_end_str.replace('Z', '+00:00'))
+                                            scheduled_end_time = to_ist(slot_end)
+                                        if slot_start_str:
+                                            slot_start = datetime.fromisoformat(slot_start_str.replace('Z', '+00:00'))
+                                            slot_start_ist_loop = to_ist(slot_start)
+                                    except Exception:
+                                        pass
+                                # Enforce minimum 30 min so interview does not end early (always overwrite short slots)
+                                if interview_duration_minutes < 30:
+                                    logger.warning(
+                                        f"⏰ Duration {interview_duration_minutes} min < 30; enforcing 30 min so interview does not end early"
+                                    )
+                                    interview_duration_minutes = 30
+                                    if slot_start_ist_loop is not None:
+                                        scheduled_end_time = slot_start_ist_loop + timedelta(minutes=30)
+                                if scheduled_end_time:
+                                    logger.info(f"⏰ Slot end at IST {scheduled_end_time} (duration={interview_duration_minutes} min)")
+                            else:
+                                logger.warning(f"Slot not found: {slot_id}")
                         except Exception as e:
                             logger.warning(f"Could not fetch slot: {e}")
                     
@@ -359,6 +387,12 @@ async def entrypoint(ctx: JobContext) -> None:
         
         # Phase template: 30 or 45 minutes (for dynamic phase allocation when candidate joins)
         scheduled_duration_minutes = 45 if interview_duration_minutes >= 45 else 30
+        
+        # Ensure int everywhere (DB may return int/float; agent and loop expect whole minutes)
+        interview_duration_minutes = int(interview_duration_minutes)
+        scheduled_duration_minutes = int(scheduled_duration_minutes)
+        
+        logger.info(f"FINAL INTERVIEW DURATION: {interview_duration_minutes}")
         
         if scheduled_end_time:
             logger.info(f"⏰ Interview time limit: {interview_duration_minutes} minutes (ends at {scheduled_end_time}); timer starts when candidate joins")
@@ -414,15 +448,38 @@ async def entrypoint(ctx: JobContext) -> None:
         if booking_prompt:
             agent_instructions += f"\n\nIMPORTANT INTERVIEW INSTRUCTIONS FROM RECRUITER:\n{booking_prompt}"
 
+        # Reinforce: never conclude based on question count (overrides any recruiter "3-4 questions" type guidance)
+        agent_instructions += (
+            "\n\nREMINDER: Do NOT conclude the interview based on question count. "
+            "Having asked 3, 5, 8, or any number of questions does NOT mean the interview is over. "
+            "Only the backend sends END_INTERVIEW when time expires. Continue asking until then."
+        )
         # Conditional coding: only ask coding/technical questions if role or interview type requires it
         agent_instructions += (
             "\n\nCONDITIONAL CODING: Ask coding/technical questions ONLY if the role requires technical evaluation "
             "or the interview type includes coding or programming problems (e.g. recruiter instructions or prompt mention technical/coding evaluation or programming problems). "
             "Programming problems means you should ask coding questions. Otherwise skip the coding phase and use that time for MCQ and logical reasoning."
         )
+        # If recruiter prompt or instructions mention programming/coding or language names, require at least one live coding question
+        _prompt_lower = ((agent_instructions or "") + (booking_prompt or "")).lower()
+        _coding_keywords = ("programming", "coding", "programming problems", "java", "python", "program","sql","c","cpp","javascript","typescript","html","css","react","vue","angular","nodejs","express","fastapi","flask","django","sql","postgresql","mysql","mongodb","oracle","sqlite","aws","azure","gcp","kubernetes","docker","git","github","gitlab","jenkins","ci/cd","machine learning","ai","deep learning","nlp","computer vision","data science","c","c++","c#","go","rust","php","ruby","swift","kotlin","dart","tailwind","bootstrap","material ui","redux","graphql","rest api","microservices","tensorflow","pytorch","pandas","numpy","scikit-learn","keras","opencv","matplotlib","seaborn","spark","hadoop","docker compose","terraform","ansible","linux","unix","windows","macos","flutter","react native","ionic","xamarin","firebase","supabase","redis","elasticsearch","nginx","apache","junit","selenium","postman","agile","scrum")
+        if any(kw in _prompt_lower for kw in _coding_keywords):
+            agent_instructions += (
+                "\n\nREQUIRED: This interview mentions programming, coding, or a programming language (e.g. Java, Python). You MUST ask at least one live coding question. "
+                "Ask it during the technical phase (when current_phase=technical). Guide the candidate to open the code editor (</> in the bottom bar). "
+                "Do not skip the coding question; even in a short interview, include one coding problem."
+            )
+            logger.info("[OK] Custom prompt contains coding-related keyword; REQUIRED: at least one live coding question")
 
         if not agent_instructions:
-            logger.info("[INFO] No custom instructions or prompt found - using Agent defaults")
+            logger.info("[INFO] No custom instructions or prompt found - using Agent defaults (hardcoded phase-based prompt)")
+            print("[INFO] Using default (hardcoded) prompt - no system instructions or custom prompt set", flush=True)
+        else:
+            logger.info(
+                "[OK] Using dashboard instructions: system_instructions + custom prompt (booking_prompt). "
+                "Interview will follow these, not the hardcoded default prompt."
+            )
+            print("[OK] Using system instructions + custom prompt for this interview", flush=True)
         
         # Substitute placeholders (e.g. {name}, {full_name}, {email}) from candidate profile
         if agent_instructions:
@@ -548,10 +605,16 @@ async def entrypoint(ctx: JobContext) -> None:
                 from app.services.history_managed_llm_wrapper import set_skip_transcript  # type: ignore
                 set_skip_transcript(True)
                 greeting_instruction = (
-                    "Start the interview with your opening as defined in your role and instructions above. "
-                    "Give a brief, professional greeting (introduce yourself and the interview topic as per your context), "
-                    "then ask exactly ONE simple opening question (e.g. about themselves or background). "
-                    "Keep it short. Do not use brackets in your speech. Wait for their response before continuing."
+                    "This is your FIRST turn. Deliver ONLY the opening of the interview:\n"
+                    "1. Greet the candidate warmly (use their name if available) and introduce yourself briefly.\n"
+                    "2. Ask exactly ONE opening question — invite them to introduce themselves "
+                    "(e.g. 'Tell me a bit about yourself and what you've been working on recently.').\n"
+                    "YOUR RESPONSE MUST END AFTER THAT ONE QUESTION. Nothing else.\n"
+                    "Do NOT ask a second question. Do NOT say 'also', 'and', or add any follow-up.\n"
+                    "Do NOT say 'thanks', 'great', or any filler after asking.\n"
+                    "Do NOT mention phases, MCQs, coding, or what comes later.\n"
+                    "Do NOT say goodbye or any closing phrase.\n"
+                    "Keep it warm, brief, and professional. Speak naturally — no brackets or labels."
                 )
                 await asyncio.wait_for(
                     session.generate_reply(instructions=greeting_instruction),

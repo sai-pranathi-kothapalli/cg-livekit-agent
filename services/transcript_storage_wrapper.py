@@ -120,7 +120,16 @@ class TranscriptStorageWrapper:
     ) -> None:
         """
         Send transcript to frontend AND save to database.
+        Sanitizes agent text to strip any leaked internal context before display/DB.
         """
+        if transcript_type == "agentTranscript" and text:
+            try:
+                from services.output_sanitizer import sanitize_agent_response
+                text = sanitize_agent_response(text)
+            except Exception:
+                pass
+        if not text and transcript_type == "agentTranscript":
+            return
         # Forward to original service (for frontend)
         await self._original_service.send_transcript(text, transcript_type, max_retries)
         
