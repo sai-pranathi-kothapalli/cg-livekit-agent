@@ -11,6 +11,20 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+if sys.platform == 'win32':
+    try:
+        import winloop
+        import asyncio
+        winloop.install()
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
+    except Exception:
+        pass
+
+from dotenv import load_dotenv
+
 # Add backend to Python path FIRST so we can import from app (try both folder names)
 # Check 1: Sibling in worker/ (e.g. worker/Livekit-Backend-agent-backend)
 # Check 2: Sibling in worker/ (e.g. worker/backend)
