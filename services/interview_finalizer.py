@@ -80,13 +80,33 @@ async def finalize_interview(
             except Exception as e:
                 logger.warning(f"⚠️  [FINALIZE] Failed to extract token usage: {e}", exc_info=True)
 
+            # Get interview state (violations, code submissions)
+            try:
+                from services import interview_state
+                session_state = interview_state.get_state()
+                logger.info(f"📊 [FINALIZE] Retrieved session state: {len(session_state.get('violations', []))} violations, {len(session_state.get('code_submissions', []))} code submissions")
+                
+                # Merge with any existing interview_state if needed, though usually this IS the state
+                interview_state_data = session_state
+            except Exception as e:
+                logger.warning(f"⚠️  [FINALIZE] Failed to retrieve session state: {e}")
+                interview_state_data = None
+
             # Create evaluation
             evaluation_id = evaluation_service.calculate_evaluation_from_transcript(
                 booking_token=booking_token,
                 room_name=room_name,
                 transcript=transcript,
                 token_usage=token_usage,
+                interview_state=interview_state_data,
             )
+            
+            # Clear state to prevent leaks into next session in same process (if re-used)
+            try:
+                from services import interview_state
+                interview_state.clear_state()
+            except:
+                pass
 
             if evaluation_id:
                 logger.info(f"✅ [FINALIZE] Evaluation created: {evaluation_id}")

@@ -289,9 +289,9 @@ async def entrypoint(ctx: JobContext) -> None:
         except Exception as e:
             logger.warning(f"Could not get transcript storage service: {e}")
         
-        # Interview timing: timer starts when candidate joins (see interview_loop).
+        # Interview timing: timer starts when candidate sends first message (see interview_loop).
         # Placeholder start; loop will set resolved_start_time when candidate joins.
-        interview_start_time = get_now_ist()
+        interview_start_time = None
         slot_start_ist_loop = None  # For join-delay: when slot/booking was scheduled to start
         scheduled_duration_minutes = 30  # 30 or 45 for phase template
         
@@ -352,14 +352,8 @@ async def entrypoint(ctx: JobContext) -> None:
                                             slot_start_ist_loop = to_ist(slot_start)
                                     except Exception:
                                         pass
-                                # Enforce minimum 30 min so interview does not end early (always overwrite short slots)
-                                if interview_duration_minutes < 30:
-                                    logger.warning(
-                                        f"⏰ Duration {interview_duration_minutes} min < 30; enforcing 30 min so interview does not end early"
-                                    )
-                                    interview_duration_minutes = 30
-                                    if slot_start_ist_loop is not None:
-                                        scheduled_end_time = slot_start_ist_loop + timedelta(minutes=30)
+                                    # Minimum check moved below to global scope
+                                    pass
                                 if scheduled_end_time:
                                     logger.info(f"⏰ Slot end at IST {scheduled_end_time} (duration={interview_duration_minutes} min)")
                             else:
@@ -367,9 +361,9 @@ async def entrypoint(ctx: JobContext) -> None:
                         except Exception as e:
                             logger.warning(f"Could not fetch slot: {e}")
                     
-                    # If no slot duration, use scheduled_at + default duration
-                    if not scheduled_end_time and booking.get('scheduled_at'):
-                        scheduled_at_str = booking.get('scheduled_at')
+                    # If no slot duration, use scheduled_at / slot_datetime + default duration
+                    if not scheduled_end_time and (booking.get('scheduled_at') or booking.get('slot_datetime')):
+                        scheduled_at_str = booking.get('scheduled_at') or booking.get('slot_datetime')
                         try:
                             if 'Z' in scheduled_at_str or '+00:00' in scheduled_at_str:
                                 scheduled_at = datetime.fromisoformat(scheduled_at_str.replace('Z', '+00:00'))
@@ -385,6 +379,15 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception as e:
                 logger.warning(f"Could not fetch booking for duration: {e}")
         
+        # --- GLOBAL DURATION ENFORCEMENT ---
+        # Ensure interview_duration_minutes is at least 30, regardless of how it was retrieved.
+        if interview_duration_minutes < 30:
+            logger.info(f"⏰ Enforcing 30-min minimum (was {interview_duration_minutes} min)")
+            interview_duration_minutes = 30
+            # Recalculate scheduled_end_time if we have a start time
+            if slot_start_ist_loop:
+                scheduled_end_time = slot_start_ist_loop + timedelta(minutes=30)
+
         # Phase template: 30 or 45 minutes (for dynamic phase allocation when candidate joins)
         scheduled_duration_minutes = 45 if interview_duration_minutes >= 45 else 30
         
@@ -392,8 +395,13 @@ async def entrypoint(ctx: JobContext) -> None:
         interview_duration_minutes = int(interview_duration_minutes)
         scheduled_duration_minutes = int(scheduled_duration_minutes)
         
-        logger.info(f"FINAL INTERVIEW DURATION: {interview_duration_minutes}")
-        
+        logger.info(f"============================================================")
+        logger.info(f"RESOLVED INTERVIEW DURATION: {interview_duration_minutes} MINUTES")
+        if scheduled_end_time:
+             logger.info(f"SCHEDULED TO END AT: {scheduled_end_time} IST")
+        logger.info(f"============================================================")
+        print(f"⏰ RESOLVED INTERVIEW DURATION: {interview_duration_minutes} MINUTES", flush=True)
+
         if scheduled_end_time:
             logger.info(f"⏰ Interview time limit: {interview_duration_minutes} minutes (ends at {scheduled_end_time}); timer starts when candidate joins")
         else:
@@ -602,10 +610,12 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.info("[GREETING] Generating initial greeting (session is now running)...")
             print("[GREETING] Generating initial greeting...", flush=True)
             try:
-                from app.services.history_managed_llm_wrapper import set_skip_transcript  # type: ignore
+                from app.services.history_managed_llm_wrapper import set_skip_transcript
+                from services.time_context_llm_wrapper import generate_reply_with_instructions
                 set_skip_transcript(True)
                 greeting_instruction = (
-                    "This is your FIRST turn. Deliver ONLY the opening of the interview:\n"
+                    "[INTERNAL — DO NOT READ ALOUD. This is your first turn instructions.]\n"
+                    "Deliver ONLY the opening of the interview:\n"
                     "1. Greet the candidate warmly (use their name if available) and introduce yourself briefly.\n"
                     "2. Ask exactly ONE opening question — invite them to introduce themselves "
                     "(e.g. 'Tell me a bit about yourself and what you've been working on recently.').\n"
@@ -614,10 +624,11 @@ async def entrypoint(ctx: JobContext) -> None:
                     "Do NOT say 'thanks', 'great', or any filler after asking.\n"
                     "Do NOT mention phases, MCQs, coding, or what comes later.\n"
                     "Do NOT say goodbye or any closing phrase.\n"
-                    "Keep it warm, brief, and professional. Speak naturally — no brackets or labels."
+                    "Keep it warm, brief, and professional. Speak naturally — no brackets or labels.\n"
+                    "[END INTERNAL CONTEXT]"
                 )
                 await asyncio.wait_for(
-                    session.generate_reply(instructions=greeting_instruction),
+                    generate_reply_with_instructions(session, instructions=greeting_instruction),
                     timeout=60.0
                 )
                 set_skip_transcript(False)

@@ -6,7 +6,8 @@ never adds INTERNAL text to the persistent chat_ctx. Sanitizes chat context firs
 Timing is centralized in utils.interview_timer.
 """
 
-from typing import Any, Callable
+import contextvars
+from typing import Any, Callable, Optional
 
 from livekit.agents import llm
 
@@ -17,6 +18,44 @@ from utils.interview_timer import get_time_remaining, get_interview_focus  # typ
 from services.output_sanitizer import remove_internal_blocks  # type: ignore
 
 logger = get_logger(__name__)
+
+# Context variable for turn-specific instructions (to avoid polluting persistent chat history)
+_turn_instructions_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("turn_instructions", default=None)
+
+
+def set_turn_instructions(instructions: Optional[str]) -> None:
+    """Set instructions for the next LLM turn only."""
+    _turn_instructions_var.set(instructions)
+
+
+def get_turn_instructions() -> Optional[str]:
+    """Get instructions for the current LLM turn."""
+    return _turn_instructions_var.get()
+
+
+async def generate_reply_with_instructions(session, instructions: str) -> None:
+    """
+    Trigger an AI response with specific instructions without polluting
+    the persistent chat context/history.
+    """
+    set_turn_instructions(instructions)
+    try:
+        # Use a distinctive trigger that the wrapper will hide from the LLM.
+        # This ensures session.generate_reply() actually triggers a call.
+        await session.generate_reply(instructions="[INTERNAL_TRIGGER]")
+        
+        # Cleanup: Remove the trigger from the session's persistent chat_ctx
+        # so it never appears in the conversation array.
+        try:
+            if hasattr(session, 'chat_ctx') and hasattr(session.chat_ctx, 'messages'):
+                messages = session.chat_ctx.messages
+                if messages and messages[-1].content == "[INTERNAL_TRIGGER]":
+                    messages.pop()
+        except (AttributeError, IndexError):
+            pass
+    finally:
+        # Always clear after the turn to ensure no leaks into subsequent turns
+        set_turn_instructions(None)
 
 
 def _get_questions_asked() -> int:
@@ -51,34 +90,59 @@ def _build_system_prompt(remaining_minutes: int, focus: str, duration_minutes: i
     )
     if focus == "intro":
         instructions = [
-            "Ask one intro question (background, experience, recent work).",
-            "No MCQs or coding yet. Keep asking follow-ups if the candidate finishes early.",
+            "You are in the INTRODUCTION phase.",
+            "Keep asking follow-up questions about the candidate's background, experience, and recent work.",
+            "Do NOT move to technical questions yet.",
+            "Do NOT wrap up or conclude anything.",
+            "If you feel you have covered the intro well, ask ONE MORE follow-up about something specific they mentioned.",
+            "NEVER leave this phase on your own — only TIME CONTEXT changing to technical means intro is over.",
+            "The interview is NOT over until END_INTERVIEW arrives. Keep asking questions no matter what.",
         ]
     elif focus == "technical":
         instructions = [
-            "Ask one technical or coding question.",
-            "Continue with follow-ups or new problems if time remains.",
+            "You are in the TECHNICAL phase.",
+            "After every candidate answer, immediately ask a follow-up or a brand new technical question.",
+            "Never stop asking. If you run out of topics ask about system design, trade-offs, or past project decisions.",
+            "Do NOT wrap up. Do NOT say goodbye. Do NOT move to closing under any circumstance.",
+            "NEVER conclude this phase on your own.",
+            "The interview is NOT over until END_INTERVIEW arrives. Keep asking questions no matter what.",
         ]
     elif focus == "coding":
         instructions = [
-            "Focus on coding or technical depth. Ask one coding or MCQ-style question.",
-            "After answer, give brief feedback and continue with more if time remains.",
+            "You are in the CODING and MCQ phase.",
+            "If you have not asked a coding question yet — ask one now. Tell the candidate to open the code editor (</> in the bottom bar).",
+            "After the coding question is submitted and probed, move to MCQ questions.",
+            "Ask MCQ questions one at a time. After every answer give brief feedback then ask the next MCQ immediately.",
+            "Do NOT do only MCQs if coding has not happened yet — coding comes first.",
+            "Do NOT wrap up. Do NOT say goodbye.",
+            "Keep asking coding or MCQ questions until TIME CONTEXT changes.",
+            "The interview is NOT over until END_INTERVIEW arrives. Keep asking questions no matter what.",
         ]
     elif focus == "final":
         instructions = [
-            "Final minutes. Ask one open-ended or wrap-up style question.",
-            "Do NOT say goodbye or conclude yet. Wait for END_INTERVIEW.",
+            "You are in the FINAL phase.",
+            "Ask open-ended questions — strengths, challenges, learnings, what they would do differently.",
+            "Do NOT say goodbye. Do NOT say that concludes.",
+            "Do NOT deliver the closing statement.",
+            "END_INTERVIEW has NOT arrived yet. Keep talking.",
+            "The interview is NOT over until END_INTERVIEW arrives. Keep asking questions no matter what.",
         ]
     else:
         # wrap_up
         instructions = [
-            "Wrap-up. No new questions. Wait for END_INTERVIEW to deliver closing.",
+            "Stay fully engaged. Ask one last open-ended question.",
+            "END_INTERVIEW is arriving very soon but has NOT arrived yet. Do NOT conclude yet.",
+            "Never say goodbye until END_INTERVIEW is received.",
+            "The interview is NOT over until END_INTERVIEW arrives.",
         ]
+
     return (
         f"{header}"
         + "\n".join(f"- {i}" for i in instructions) + "\n"
         "- ONE TURN = ONE QUESTION. Ask one question, then STOP and wait.\n"
         "- NEVER say goodbye or conclude until END_INTERVIEW.\n"
+        "ABSOLUTE RULE: A natural feeling that the conversation is complete is NOT permission to close. "
+        "Only END_INTERVIEW arriving in your instructions is permission to close. Until then, always ask another question.\n"
         "[END INTERNAL CONTEXT — Your next message must be ONLY what you say to the candidate. "
         "Do not repeat or include any of the lines above. Start directly with your first sentence to the candidate.]"
     )
@@ -186,6 +250,23 @@ class TimeContextLLMWrapper:
             )
             return self._original_chat(*args, **kwargs)
 
+        # 0) Intercept and hide [INTERNAL_TRIGGER] from the LLM
+        # This ensures the model only sees the turn instructions, not the trigger message.
+        items = getattr(chat_ctx, "messages", None) or getattr(chat_ctx, "items", [])
+        if items and len(items) > 0:
+            last_msg = items[-1]
+            last_content = getattr(last_msg, "content", "")
+            if last_content == "[INTERNAL_TRIGGER]":
+                logger.debug("⏰ Intercepted [INTERNAL_TRIGGER] - hiding from LLM")
+                chat_ctx = chat_ctx.copy()
+                if hasattr(chat_ctx, "messages"):
+                    chat_ctx.messages.pop()
+                    logger.debug("   [OK] Popped from chat_ctx.messages copy")
+                elif hasattr(chat_ctx, "items"):
+                    chat_ctx.items.pop()
+                    logger.debug("   [OK] Popped from chat_ctx.items copy")
+                kwargs["chat_ctx"] = chat_ctx
+
         # 1) Sanitize BEFORE any prompt construction — no internal blocks in history.
         # Run twice to maximize cleanup (e.g. list content); never crash on leakage.
         sanitize_chat_context(chat_ctx)
@@ -243,6 +324,12 @@ class TimeContextLLMWrapper:
                 return self._original_chat(*args, **kwargs)
 
             system_prompt = _build_system_prompt(remaining_min, focus, duration_minutes)
+            
+            # 2) Inject turn-specific instructions (e.g. greeting, evaluation) if set
+            turn_instructions = get_turn_instructions()
+            if turn_instructions:
+                system_prompt = f"{system_prompt}\n\n[INTERNAL — TURN-SPECIFIC INSTRUCTIONS]\n{turn_instructions}\n[END INTERNAL CONTEXT]"
+            
             kwargs = {**kwargs, "chat_ctx": _chat_ctx_with_system_prepended(chat_ctx, system_prompt)}
         except Exception as e:
             logger.warning("⏰ Could not inject time context: %s", e, exc_info=True)

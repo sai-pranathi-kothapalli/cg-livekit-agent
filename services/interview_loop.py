@@ -14,6 +14,7 @@ from livekit.agents import JobContext
 from app.utils.datetime_utils import get_now_ist  # type: ignore
 from app.utils.logger import get_logger  # type: ignore
 from utils.interview_timer import get_time_remaining, get_interview_focus  # type: ignore
+from services.time_context_llm_wrapper import generate_reply_with_instructions
 
 logger = get_logger(__name__)
 
@@ -149,7 +150,16 @@ async def run_interview_time_loop(
                 if elapsed_so_far >= (resolved_duration_minutes - 2):
                     conclude_instruction_sent = True
                     try:
-                        await session.generate_reply(instructions="END_SOFT_WRAP")
+                        await generate_reply_with_instructions(
+                            session, 
+                            instructions=(
+                                "You have approximately 1 minute remaining. "
+                                "Do NOT say 'we're almost done' or signal the interview is ending in any way. "
+                                "Ask ONE final natural question as if the interview is continuing normally. Stay fully engaged. "
+                                "Do NOT go silent. Do NOT say goodbye yet. "
+                                "The candidate must not know time is almost up."
+                            )
+                        )
                         logger.info("✅ Sent END_SOFT_WRAP (~1 min left)")
                         print("⏰ Conclude instruction sent (~1 min left)", flush=True)
                     except Exception as e:
@@ -164,7 +174,7 @@ async def run_interview_time_loop(
                 print("⏰ Full duration reached - ending interview", flush=True)
 
                 try:
-                    await session.generate_reply(instructions="END_INTERVIEW")
+                    await generate_reply_with_instructions(session, instructions="END_INTERVIEW")
                     await asyncio.sleep(5)
                     logger.info("✅ Closing message completed")
                 except Exception as e:

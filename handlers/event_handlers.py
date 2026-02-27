@@ -11,6 +11,7 @@ from livekit.agents import JobContext
 
 from agents.utils import get_track_source_name
 from app.utils.logger import get_logger  # type: ignore
+from services.time_context_llm_wrapper import generate_reply_with_instructions
 
 logger = get_logger(__name__)
 
@@ -29,6 +30,37 @@ def setup_session_event_handlers(
     ctx is used to publish user transcripts to the frontend via data channel.
     """
     log = logger_instance or logger
+    nudge_task: Optional[asyncio.Task] = None
+
+    async def _run_nudge_timer():
+        nonlocal nudge_task
+        try:
+            await asyncio.sleep(30)
+            log.info("⏰ No user speech detected for 30s - triggering nudge")
+            nudge_instruction = (
+                "[INTERNAL — DO NOT READ ALOUD. The candidate has been silent for 30 seconds.]\n"
+                "Briefly nudge the candidate. Ask if they are there, if they need help, or if they "
+                "want more time to think. Be polite and professional. One short sentence only.\n"
+                "[END INTERNAL CONTEXT]"
+            )
+            # Trigger nudge via a new task
+            asyncio.create_task(generate_reply_with_instructions(session, instructions=nudge_instruction))
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.warning(f"Error in nudge timer: {e}")
+
+    def start_nudge_timer():
+        nonlocal nudge_task
+        if nudge_task:
+            nudge_task.cancel()
+        nudge_task = asyncio.create_task(_run_nudge_timer())
+
+    def cancel_nudge_timer():
+        nonlocal nudge_task
+        if nudge_task:
+            nudge_task.cancel()
+            nudge_task = None
 
     @session.on("user_state_changed")
     def on_user_state_changed(event):
@@ -38,6 +70,7 @@ def setup_session_event_handlers(
             log.debug(f"👤 [USER STATE] {old_state} → {new_state}")
             if new_state == "speaking":
                 log.debug("🎤 [STT] User started speaking (VAD detected)")
+                cancel_nudge_timer()
             elif new_state == "listening":
                 log.debug("🔇 [STT] User stopped speaking (VAD detected silence)")
         except Exception as e:
@@ -53,8 +86,10 @@ def setup_session_event_handlers(
                 log.debug("💭 [LLM] Agent started thinking (generating reply)")
             elif new_state == "speaking":
                 log.debug("🔊 [TTS] Agent started speaking (audio playing)")
+                cancel_nudge_timer()
             elif new_state == "listening":
                 log.debug("👂 [AGENT] Agent is listening (ready for user input)")
+                start_nudge_timer()
         except Exception as e:
             log.debug(f"Error in agent_state_changed handler: {e}")
 

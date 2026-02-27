@@ -8,82 +8,120 @@ import json
 from livekit import rtc
 
 from app.utils.logger import get_logger  # type: ignore
+from app.utils.datetime_utils import get_now_ist # type: ignore
+from services.time_context_llm_wrapper import generate_reply_with_instructions
+from services import interview_state
 
 logger = get_logger(__name__)
 
 
 def setup_data_handlers(room: rtc.Room, session, logger_instance=None) -> None:
     """
-    Register data_received handler for code-submission, monitoring, code-snapshot, code-idle.
-    
-    Args:
-        room: LiveKit room to attach handler to
-        session: AgentSession for generate_reply
-        logger_instance: Optional logger (defaults to module logger)
+    Register data_received handler for code-submission, monitoring, code-observation.
     """
     log = logger_instance or logger
 
     @room.on("data_received")
     def on_data_received(data: rtc.DataPacket):
-        if data.topic == "code-submission":
+        topic = data.topic
+        if topic == "code-submission":
             _handle_code_submission(data, session, log)
-        elif data.topic == "monitoring":
+        elif topic == "monitoring":
             _handle_monitoring(data, session, log)
-        elif data.topic == "code-snapshot":
-            _handle_code_snapshot(data, session, log)
-        elif data.topic == "code-idle":
-            _handle_code_idle(data, session, log)
+        elif topic == "code-observation":
+            _handle_code_observation(data, session, log)
+
+
+def _handle_code_observation(data: rtc.DataPacket, session, log) -> None:
+    """Handle 8s debounce coding observation."""
+    try:
+        payload = json.loads(data.data)
+        current_code = payload.get('current_code', '')
+        question = payload.get('question', 'N/A')
+        language = payload.get('language', 'N/A')
+
+        log.info(f"👀 [CODE OBSERVATION] Candidate code update ({len(current_code.splitlines())} lines)")
+
+        observation_context = (
+            f"[INTERNAL — OBSERVATION PHASE]\n"
+            f"The candidate is currently typing. You are observing their screen.\n"
+            f"Question: {question}\n"
+            f"Language: {language}\n"
+            f"Current Progress:\n{current_code}\n\n"
+            f"STRICT RULES:\n"
+            f"1. NEVER evaluate or judge the code yet.\n"
+            f"2. NEVER say the code is wrong or incomplete.\n"
+            f"3. Do NOT read the code back aloud.\n"
+            f"4. Just make ONE short, natural, encouraging comment or ask a curious question about their choice.\n"
+            f"Example: 'Interesting approach — what's your thinking behind using a hashmap here?'\n"
+            f"Keep it very casual. Then go silent again.\n"
+            f"[END INTERNAL]"
+        )
+
+        async def _trigger_observation():
+            try:
+                await generate_reply_with_instructions(session, instructions=observation_context)
+            except Exception as e:
+                log.error(f"Failed observation reply: {e}")
+
+        asyncio.create_task(_trigger_observation())
+    except Exception as e:
+        log.error(f"Error handling code-observation: {e}", exc_info=True)
 
 
 def _handle_code_submission(data: rtc.DataPacket, session, log) -> None:
-    """Handle code submission from candidate."""
+    """Handle final code submission with evaluation phase rules."""
     try:
         payload = json.loads(data.data)
-        log.info(f"📥 [CODE SUBMISSION] Received from {data.participant.identity}")
+        log.info(f"📥 [CODE SUBMISSION] Final submission received")
 
         candidate_code = payload.get('code', '')
+        time_taken = payload.get('time_taken_seconds', 0)
+        obs_count = payload.get('observation_count', 0)
+        language = payload.get('language', 'N/A')
+        question = payload.get('question', 'N/A')
         execution_output = payload.get('executionOutput', 'N/A')
-        ai_verdict = payload.get('aiAnalysis', 'N/A')
-        submission_context = (
-            # Wrap everything in [INTERNAL] markers so the stream filter strips any echo
-            # of this instruction block from the TTS output. The LLM reads and follows these
-            # instructions from the system message but must NOT speak them aloud.
-            f"[INTERNAL — DO NOT READ ALOUD. DO NOT SPEAK ANY OF THIS TEXT TO THE CANDIDATE. "
-            f"These are your private instructions for evaluating the code submission.]\n\n"
-            f"[CODE SUBMISSION — OVERRIDE ALL OTHER PHASE INSTRUCTIONS FOR THIS RESPONSE ONLY]\n\n"
-            f"The candidate has just submitted their code solution. Regardless of what phase or topic "
-            f"was discussed before, your ONLY job for this response is to evaluate the submitted code.\n\n"
-            f"Problem: {payload.get('question', 'N/A')}\n"
-            f"Language: {payload.get('language', 'N/A')}\n"
-            f"--- CANDIDATE'S SUBMITTED CODE ---\n{candidate_code}\n--- END CODE ---\n"
-            f"Execution Output: {execution_output}\n"
-            f"AI Analysis Verdict: {ai_verdict}\n\n"
-            f"YOUR RESPONSE MUST DO THIS IN ORDER:\n"
-            f"1. Evaluate correctness FIRST — tell the candidate directly whether their solution is "
-            f"correct, partially correct, or incorrect. Reference specific lines or logic in the code. "
-            f"If execution output shows errors or wrong output, point that out explicitly "
-            f"(e.g. 'Your solution returns X but the expected output is Y because...').\n"
-            f"2. Ask exactly ONE probing follow-up question — the most revealing one based on the code:\n"
-            f"   - 'Why did you choose this approach?' or 'Why did you use [data structure/algorithm they used]?'\n"
-            f"   - 'How does your solution handle [edge case visible in the code]?'\n"
-            f"   - 'What is the time and space complexity of your solution?'\n"
-            f"   - 'If the input were much larger, would this still be efficient? How would you optimize it?'\n"
-            f"   - 'Is there anything in this code you would refactor or improve given more time?'\n"
-            f"3. After they answer, ask the next follow-up. One question per turn.\n"
-            f"Be direct and professional. Do NOT say 'great attempt' or hedge your evaluation.\n"
-            f"[END INTERNAL CONTEXT — respond naturally and evaluate the candidate's code below]"
+
+        # Determine evaluation result (logic moved to LLM but we store metadata)
+        # We'll let the evaluation service handle the final 'correct/wrong' status from transcript,
+        # but we persist the submission data now.
+        interview_state.add_code_submission(
+            code=candidate_code,
+            question=question,
+            ai_verdict="Pending Evaluation",
+            execution_output=execution_output,
+            timestamp=get_now_ist().isoformat(),
+            language=language,
+            time_taken_seconds=time_taken,
+            observation_count=obs_count
         )
 
-        async def _trigger_reply():
-            try:
-                log.info("🧪 Triggering AI response for code submission...")
-                await session.generate_reply(instructions=submission_context)
-            except Exception as reply_err:
-                log.error(f"Failed to trigger code submission reply: {reply_err}")
+        evaluation_context = (
+            f"[INTERNAL — EVALUATION PHASE]\n"
+            f"The candidate has CLICKED SUBMIT. Your role is now a professional evaluator.\n"
+            f"Question: {question}\n"
+            f"Language: {language}\n"
+            f"Time Taken: {time_taken} seconds\n"
+            f"Observations during coding: {obs_count}\n"
+            f"Submitted Code:\n{candidate_code}\n\n"
+            f"STRICT RULES:\n"
+            f"1. Evaluate correctness: Correct, Partially Correct (misses edge cases), or Wrong.\n"
+            f"2. NEVER read the code aloud or say 'I see you wrote...'.\n"
+            f"3. If fast (<60s) for medium problem, internally note suspicious speed.\n"
+            f"4. Tell them clearly if it works or where it fails (e.g., 'This works for basic cases, but what about negatives?').\n"
+            f"5. Ask exactly ONE follow-up probing question to start the Probing Phase.\n"
+            f"[END INTERNAL]"
+        )
 
-        asyncio.create_task(_trigger_reply())
+        async def _trigger_evaluation():
+            try:
+                await generate_reply_with_instructions(session, instructions=evaluation_context)
+            except Exception as e:
+                log.error(f"Failed evaluation reply: {e}")
+
+        asyncio.create_task(_trigger_evaluation())
     except Exception as e:
-        log.error(f"Error handling code-submission data: {e}", exc_info=True)
+        log.error(f"Error handling code-submission: {e}", exc_info=True)
 
 
 def _handle_monitoring(data: rtc.DataPacket, session, log) -> None:
@@ -91,7 +129,15 @@ def _handle_monitoring(data: rtc.DataPacket, session, log) -> None:
     try:
         payload = json.loads(data.data)
         alert_type = payload.get('alertType')
+        message = payload.get('message', 'N/A')
         log.warning(f"🚨 [MONITORING ALERT] {alert_type} from {data.participant.identity}")
+
+        # Persist for evaluation
+        interview_state.add_violation(
+            alert_type=alert_type,
+            message=message,
+            timestamp=get_now_ist().isoformat()
+        )
 
         instruction = None
         if alert_type == "multiple_people_detected":
@@ -103,7 +149,7 @@ def _handle_monitoring(data: rtc.DataPacket, session, log) -> None:
         if instruction:
             async def _trigger_monitoring_reply():
                 try:
-                    await session.generate_reply(instructions=instruction)
+                    await generate_reply_with_instructions(session, instructions=instruction)
                 except Exception as e:
                     log.error(f"Failed to trigger monitoring reply: {e}")
             asyncio.create_task(_trigger_monitoring_reply())
@@ -126,7 +172,7 @@ def _handle_code_snapshot(data: rtc.DataPacket, session, log) -> None:
         language = payload.get('language', 'N/A')
         log.info(
             f"📸 [CODE SNAPSHOT] Candidate is coding | lang={language} | "
-            f"lines={len(code_snippet.splitlines())} | question={str(question)[:60]}"
+            f"lines={len(code_snippet.splitlines())} | question={str(question)}"
         )
         # No generate_reply here — let the candidate code without interruption.
         # The agent will speak only when the candidate pauses (code-idle) or submits (code-submission).
@@ -151,7 +197,7 @@ def _handle_code_idle(data: rtc.DataPacket, session, log) -> None:
 
         async def _trigger_idle_reply():
             try:
-                await session.generate_reply(instructions=instruction)
+                await generate_reply_with_instructions(session, instructions=instruction)
             except Exception as e:
                 log.error(f"Failed to trigger code idle reply: {e}")
         asyncio.create_task(_trigger_idle_reply())
