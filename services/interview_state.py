@@ -47,6 +47,13 @@ def add_probe_response(probe_question: str, candidate_response: str):
             "candidate_response": candidate_response
         })
 
+def update_latest_ai_verdict(ai_verdict: str) -> None:
+    """
+    Update the ai_verdict of the most recent code submission.
+    """
+    if _state["code_submissions"]:
+        _state["code_submissions"][-1]["ai_verdict"] = ai_verdict
+
 def get_state() -> Dict[str, Any]:
     """
     Get the current interview state.

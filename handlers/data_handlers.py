@@ -15,6 +15,26 @@ from services import interview_state
 logger = get_logger(__name__)
 
 
+def _extract_verdict_from_response(content: str) -> str:
+    """
+    Extract verdict (Correct, Partially Correct, Wrong) from LLM response.
+    """
+    content_lower = content.lower()
+    
+    # Look for explicit verdict statements
+    if any(phrase in content_lower for phrase in ['correct', 'works correctly', 'is correct', 'solution is correct']):
+        if any(phrase in content_lower for phrase in ['partially', 'mostly', 'almost', 'edge case', 'misses']):
+            return "Partially Correct"
+        return "Correct"
+    elif any(phrase in content_lower for phrase in ['wrong', 'incorrect', 'does not work', 'fails', 'error']):
+        return "Wrong"
+    elif any(phrase in content_lower for phrase in ['partially', 'mostly', 'almost']):
+        return "Partially Correct"
+    
+    # Default fallback
+    return "Pending Evaluation"
+
+
 def setup_data_handlers(room: rtc.Room, session, logger_instance=None) -> None:
     """
     Register data_received handler for code-submission, monitoring, code-observation.
@@ -104,6 +124,11 @@ def _handle_code_submission(data: rtc.DataPacket, session, log) -> None:
             f"Time Taken: {time_taken} seconds\n"
             f"Observations during coding: {obs_count}\n"
             f"Submitted Code:\n{candidate_code}\n\n"
+            f"Execution Output: {execution_output}\n\n"
+            f"Use the execution output to determine correctness:\n"
+            f"- If output matches expected → Correct\n"
+            f"- If output is wrong/error → Wrong or Partial\n"
+            f"- If output is 'N/A' → evaluate code visually\n\n"
             f"STRICT RULES:\n"
             f"1. Evaluate correctness: Correct, Partially Correct (misses edge cases), or Wrong.\n"
             f"2. NEVER read the code aloud or say 'I see you wrote...'.\n"
@@ -116,6 +141,27 @@ def _handle_code_submission(data: rtc.DataPacket, session, log) -> None:
         async def _trigger_evaluation():
             try:
                 await generate_reply_with_instructions(session, instructions=evaluation_context)
+                
+                # Wait a moment for the response to be fully generated and added to chat context
+                await asyncio.sleep(2)
+                
+                # Extract verdict from the LLM's response
+                try:
+                    if hasattr(session, 'chat_ctx') and hasattr(session.chat_ctx, 'messages'):
+                        messages = session.chat_ctx.messages
+                        # Find the last assistant message (the evaluation response)
+                        for msg in reversed(messages):
+                            role = getattr(msg, 'role', None)
+                            if role == 'assistant' or (hasattr(msg, 'content') and getattr(msg, 'content', '')):
+                                content = getattr(msg, 'content', '') or ''
+                                # Extract verdict from the response
+                                verdict = _extract_verdict_from_response(content)
+                                if verdict:
+                                    interview_state.update_latest_ai_verdict(verdict)
+                                    log.info(f"✅ Updated ai_verdict: {verdict}")
+                                break
+                except Exception as e:
+                    log.warning(f"Could not extract verdict from LLM response: {e}")
             except Exception as e:
                 log.error(f"Failed evaluation reply: {e}")
 
