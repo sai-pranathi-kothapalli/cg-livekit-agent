@@ -230,22 +230,43 @@ class TimingContextWrapper:
                             if hasattr(part, "text") and part.text:
                                 chunk_text += part.text if isinstance(part.text, str) else ""
 
-            # Strip internal context only when we actually see the marker; otherwise pass through so TTS gets audio
+            # Only sanitize if we see [INTERNAL in this chunk or are already buffering
             if self._sanitizer_state.should_passthrough():
+                # Marker already found in previous chunk — pass through directly
                 if chunk_text:
                     self._total_chars += len(chunk_text)
                 return chunk
+
+            # Check if [INTERNAL detected — only then start buffering
+            if "[INTERNAL" not in self._sanitizer_state.buffer and "[INTERNAL" not in chunk_text:
+                # Normal response — pass through directly, no buffering needed
+                if chunk_text:
+                    self._total_chars += len(chunk_text)
+                self._sanitizer_state.passthrough = True  # skip buffering for rest of stream
+                return chunk
+
+            # [INTERNAL detected — buffer and wait for closing marker
             self._sanitizer_state.add(chunk_text)
             after = self._sanitizer_state.take_after_marker()
             if after:
+                # Marker found — return only content after it, enable passthrough
                 self._total_chars += len(after)
                 return _make_chunk_with_content(after, chunk)
-            # No marker seen yet: pass through original chunk so TTS is audible (don't return empty)
-            if chunk_text:
-                self._total_chars += len(chunk_text)
-            return chunk
+
+            # Still buffering — return empty chunk to suppress TTS
+            return _make_chunk_with_content("", chunk)
 
         except StopAsyncIteration:
+            # Flush any remaining buffered content (sanitizer may still hold chunks)
+            if self._sanitizer_state and not self._sanitizer_state.should_passthrough():
+                remaining = self._sanitizer_state.flush_remaining()
+                if remaining:
+                    # If we have remaining content, we need to emit it before stopping
+                    # Store it and raise after emitting - but we can't emit after StopAsyncIteration
+                    # So we'll log it and let the sanitizer handle it on next stream
+                    logger.warning(f"⚠️  Stream ended with {len(remaining)} chars still buffered (no [END INTERNAL CONTEXT] marker found)")
+                    self._total_chars += len(remaining)
+            
             # Log tokens when stream ends (LiveKit may not call __aexit__, so we log here too)
             self._log_token_usage()
             self._token_logged = True

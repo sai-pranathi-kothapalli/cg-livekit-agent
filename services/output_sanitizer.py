@@ -81,30 +81,34 @@ def sanitize_agent_response(text: str) -> str:
 
 
 def _make_chunk_with_content(content: str, template_chunk: Any) -> Any:
-    """Build a chunk object that has .delta.content so downstream (TTS/transcript) see only this text."""
+    """Build a chunk with modified content — mutate original where possible."""
     try:
         delta = getattr(template_chunk, "delta", None)
         if delta is not None and hasattr(delta, "content"):
-            # Mutate in place if possible (some runtimes allow it)
             try:
                 delta.content = content
+                return template_chunk  # return original mutated chunk
+            except (AttributeError, TypeError):
+                pass
+        # Try direct content attribute
+        if hasattr(template_chunk, "content"):
+            try:
+                template_chunk.content = content
+                return template_chunk
+            except (AttributeError, TypeError):
+                pass
+        # Try text attribute
+        if hasattr(template_chunk, "text"):
+            try:
+                template_chunk.text = content
                 return template_chunk
             except (AttributeError, TypeError):
                 pass
     except Exception:
         pass
-    # Fallback: create a minimal chunk-like object
-    class Delta:
-        content: str = ""
-
-    class Chunk:
-        delta: Any = None
-
-    d = Delta()
-    d.content = content
-    c = Chunk()
-    c.delta = d
-    return c
+    # Last resort — return original chunk unmodified
+    # (better than returning incompatible type)
+    return template_chunk
 
 
 class OutputSanitizerState:
@@ -142,7 +146,8 @@ class OutputSanitizerState:
         after = self.buffer[end:].lstrip()
         self.buffer = ""
         self.passthrough = True
-        return after
+        # Sanitize the content after marker to catch any remaining internal text
+        return sanitize_agent_response(after)
 
     def take_buffer_as_empty(self) -> bool:
         """Return True if we should emit empty (drop) for current buffer (all internal)."""

@@ -74,6 +74,7 @@ def _focus_display_name(focus: str) -> str:
         "coding": "Coding",
         "final": "Final questions",
         "wrap_up": "Wrap up",
+        "conclude": "Conclusion",
     }.get(focus, focus.replace("_", " ").title())
 
 
@@ -127,13 +128,21 @@ def _build_system_prompt(remaining_minutes: int, focus: str, duration_minutes: i
             "END_INTERVIEW has NOT arrived yet. Keep talking.",
             "The interview is NOT over until END_INTERVIEW arrives. Keep asking questions no matter what.",
         ]
-    else:
-        # wrap_up
+    elif focus == "wrap_up":
         instructions = [
-            "Stay fully engaged. Ask one last open-ended question.",
+            "You are in the final minute of the interview.",
+            "Ask ONE last open-ended question and stay fully engaged.",
             "END_INTERVIEW is arriving very soon but has NOT arrived yet. Do NOT conclude yet.",
             "Never say goodbye until END_INTERVIEW is received.",
-            "The interview is NOT over until END_INTERVIEW arrives.",
+        ]
+    else:
+        # conclude — END_INTERVIEW has been triggered
+        instructions = [
+            "END_INTERVIEW has arrived. Close the interview now.",
+            "Thank the candidate warmly and naturally.",
+            "Tell them what happens next (evaluation, follow-up).",
+            "Say goodbye and end the conversation.",
+            "Do NOT ask any more questions.",
         ]
 
     return (
@@ -156,6 +165,9 @@ def sanitize_chat_context(chat_ctx) -> None:
     """
     try:
         items = getattr(chat_ctx, "messages", None) or getattr(chat_ctx, "items", [])
+        
+        # Process all messages (including system) to remove [INTERNAL] blocks
+        # DO NOT clear messages entirely - only remove the [INTERNAL] blocks
         for m in items:
             content = getattr(m, "content", None)
             if content is None:
@@ -164,15 +176,22 @@ def sanitize_chat_context(chat_ctx) -> None:
                 text = " ".join(str(c) for c in content)
             else:
                 text = str(content)
+            
+            # Remove [INTERNAL] blocks but keep the rest of the content
             cleaned = remove_internal_blocks(text)
+            
+            # Only update if content actually changed
             if cleaned == text:
                 continue
+            
             try:
                 # Preserve list shape for LiveKit ChatMessage (content is list[ChatContent])
                 if isinstance(getattr(m, "content", None), list):
-                    setattr(m, "content", [cleaned])
+                    # If cleaned is empty after removing internal blocks, keep at least empty string
+                    # This ensures the message structure is preserved for to_provider_format()
+                    setattr(m, "content", [cleaned] if cleaned else [""])
                 else:
-                    setattr(m, "content", cleaned)
+                    setattr(m, "content", cleaned if cleaned else "")
             except (AttributeError, TypeError, ValueError):
                 pass
     except Exception as e:
@@ -307,7 +326,7 @@ class TimeContextLLMWrapper:
 
         try:
             remaining_min = get_time_remaining(start_time, duration_minutes)
-            focus = get_interview_focus(remaining_min)
+            focus = get_interview_focus(remaining_min, total_duration=duration_minutes)
 
             logger.info("Time remaining: %s min | Focus: %s", remaining_min, focus)
 

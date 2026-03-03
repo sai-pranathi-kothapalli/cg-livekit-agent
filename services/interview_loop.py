@@ -18,7 +18,7 @@ from services.time_context_llm_wrapper import generate_reply_with_instructions
 
 logger = get_logger(__name__)
 
-MIN_ACTUAL_DURATION_MINUTES = 25
+MIN_ACTUAL_DURATION_MINUTES = 30
 
 
 async def run_interview_time_loop(
@@ -49,8 +49,6 @@ async def run_interview_time_loop(
     resolved_end_time: Optional[datetime] = None
     candidate_joined = False
 
-    base_template = "45" if (scheduled_duration_minutes or interview_duration_minutes) >= 45 else "30"
-
     try:
         while ctx.room.isconnected() and not interview_time_limit_reached:
             current_time_ist = get_now_ist()
@@ -62,6 +60,8 @@ async def run_interview_time_loop(
                     duration_int = int(interview_duration_minutes)
                     actual_duration = max(duration_int, MIN_ACTUAL_DURATION_MINUTES)
                     resolved_duration_minutes = actual_duration
+                    # Set base_template based on actual resolved duration (not original)
+                    base_template = "45" if actual_duration >= 43 else "30"
                     try:
                         from services.session_time_store import set_store_duration_only
                         from app.services.history_managed_llm_wrapper import reset_questions_asked  # type: ignore
@@ -94,6 +94,8 @@ async def run_interview_time_loop(
                         resolved_start_time = store_start
                         # Ensure int (store may have float if it came from DB)
                         resolved_duration_minutes = max(int(store_dur), MIN_ACTUAL_DURATION_MINUTES)
+                        # Update base_template based on resolved duration
+                        base_template = "45" if resolved_duration_minutes >= 43 else "30"
                         resolved_end_time = store_start + timedelta(minutes=resolved_duration_minutes)
                         set_session_time(resolved_start_time, resolved_duration_minutes)
                         logger.info(
@@ -110,8 +112,13 @@ async def run_interview_time_loop(
                 continue
 
             remaining_min = get_time_remaining(resolved_start_time, resolved_duration_minutes, now=current_time_ist)
-            focus = get_interview_focus(remaining_min)
+            focus = get_interview_focus(remaining_min, total_duration=resolved_duration_minutes)
             logger.info("Time remaining: %s min | Focus: %s", remaining_min, focus)
+
+            # If focus is conclude, treat as time limit reached (sync conclude focus with time_limit_reached)
+            if focus == "conclude" and not closing_triggered:
+                time_limit_reached = True
+                logger.info("⏰ Focus is 'conclude' — treating as time limit reached")
 
             time_remaining_minutes = float(remaining_min)
             # Use resolved_end_time as authoritative when set; only then use remaining_min/elapsed.
@@ -144,10 +151,12 @@ async def run_interview_time_loop(
                     except Exception as e:
                         logger.debug("⚠️  Failed to send time update: %s", e)
 
-            if resolved_end_time is not None and not conclude_instruction_sent and 0 < remaining_min <= 1:
+            # Scale soft wrap threshold: 1 min for 30-min interviews, 2 min for 45-min interviews
+            soft_wrap_threshold = max(1, round(resolved_duration_minutes / 30))  # 1 for 30min, 2 for 45min
+            if resolved_end_time is not None and not conclude_instruction_sent and 0 < remaining_min <= soft_wrap_threshold:
                 # Only send wrap-up when we're near the real end (avoids firing on timezone/calc glitches).
                 elapsed_so_far = (current_time_ist - resolved_start_time).total_seconds() / 60
-                if elapsed_so_far >= (resolved_duration_minutes - 2):
+                if elapsed_so_far >= (resolved_duration_minutes - 3):
                     conclude_instruction_sent = True
                     try:
                         await generate_reply_with_instructions(

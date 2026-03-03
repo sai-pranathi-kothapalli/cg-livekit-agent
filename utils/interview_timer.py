@@ -5,6 +5,7 @@ Timer starts on first candidate message (set in session_time_store by TimeContex
 All timing logic for the interview flow lives here; no timing logic outside this module.
 """
 
+import math
 from datetime import datetime
 from typing import Optional
 
@@ -29,29 +30,41 @@ def get_time_remaining(
         now: Current time (default: get_now_ist()). Used for tests and consistency.
 
     Returns:
-        Whole minutes remaining, >= 0.
+        Whole minutes remaining, >= 0. Uses ceiling to avoid skipping the remaining=1 window.
     """
     if now is None:
         now = get_now_ist()
     elapsed = (now - start_time).total_seconds()
     remaining = duration_minutes * 60 - elapsed
-    return max(0, int(remaining // 60))
+    # Use ceiling so that at 89 seconds remaining it returns 2 (not 1),
+    # giving the soft wrap check a full minute window to catch it
+    return max(0, math.ceil(remaining / 60)) if remaining > 0 else 0
 
 
-def get_interview_focus(remaining_minutes: int) -> str:
+def get_interview_focus(remaining_minutes: int, total_duration: int = 30) -> str:
     """
     Determine interview focus from time remaining (time-aware guidance).
+    Scales boundaries proportionally with interview duration.
     No phase enums or rigid transitions — single function for hybrid flow.
 
-    Returns one of: "intro", "technical", "coding", "final", "wrap_up"
+    Args:
+        remaining_minutes: Minutes remaining until interview end.
+        total_duration: Total interview duration in minutes (default: 30).
+
+    Returns one of: "intro", "technical", "coding", "final", "wrap_up", "conclude"
     """
-    if remaining_minutes > 24:
+    # END_INTERVIEW has been triggered - time is up
+    if remaining_minutes <= 0:
+        return "conclude"
+    
+    scale = total_duration / 30
+    if remaining_minutes > 24 * scale:
         return "intro"
-    elif remaining_minutes > 10:
+    elif remaining_minutes > 10 * scale:
         return "technical"
-    elif remaining_minutes > 3:
+    elif remaining_minutes > 3 * scale:
         return "coding"
-    elif remaining_minutes > 1:
+    elif remaining_minutes > 1 * scale:
         return "final"
     else:
         return "wrap_up"
