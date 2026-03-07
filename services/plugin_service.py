@@ -6,6 +6,7 @@ Manages initialization and configuration of LiveKit plugins
 """
 
 from typing import Dict, Any, Optional
+from livekit.agents import AgentSession
 
 from livekit import rtc
 from livekit.plugins import (  # type: ignore
@@ -20,6 +21,22 @@ try:
 except ImportError:
     GOOGLE_AVAILABLE = False
     google = None  # type: ignore
+
+# ElevenLabs TTS (fallback)
+try:
+    from livekit.plugins import elevenlabs  # type: ignore (for TTS fallback)
+    ELEVENLABS_AVAILABLE = True
+except ImportError:
+    ELEVENLABS_AVAILABLE = False
+    elevenlabs = None  # type: ignore
+
+# Tavus Avatar (optional)
+try:
+    from livekit.plugins import tavus  # type: ignore
+    TAVUS_AVAILABLE = True
+except ImportError:
+    TAVUS_AVAILABLE = False
+    tavus = None  # type: ignore
 
 from app.config import Config  # type: ignore
 from app.utils.logger import get_logger  # type: ignore
@@ -219,23 +236,78 @@ class PluginService:
     
     def _initialize_tts(self):
         """
-        Initialize TTS plugin (self-hosted only).
+        Initialize TTS plugin: Self-hosted (primary) -> ElevenLabs (fallback), or ElevenLabs only.
         
         Returns:
             Configured TTS plugin
         """
-        logger.info("[DEBUG] TTS CONFIGURATION: Self-hosted only")
-        if not self.config.openai.tts_enabled:
-            raise ConfigurationError("Self-hosted TTS is required. Set SELF_HOSTED_TTS_ENABLED=true.")
-        logger.info(f"   Base URL: {self.config.openai.tts_base_url}")
-        logger.info(f"   Model: {self.config.openai.tts_model}, Voice: {self.config.openai.tts_voice}")
-        tts_plugin = openai.TTS(
-            base_url=f"{self.config.openai.tts_base_url}/tts/v1",
-            model=self.config.openai.tts_model,
-            voice=self.config.openai.tts_voice,
-            api_key=self.config.openai.api_key,
-        )
-        logger.info("   [OK] Self-hosted TTS initialized")
+        primary_tts = None
+        fallback_tts = None
+        
+        # Check if self-hosted TTS is enabled
+        if self.config.openai.tts_enabled:
+            logger.info("[DEBUG] TTS CONFIGURATION: Self-hosted (primary) -> ElevenLabs (fallback)")
+            logger.info(f"   Base URL: {self.config.openai.tts_base_url}")
+            logger.info(f"   Model: {self.config.openai.tts_model}, Voice: {self.config.openai.tts_voice}")
+            primary_tts = openai.TTS(
+                base_url=f"{self.config.openai.tts_base_url}/tts/v1",
+                model=self.config.openai.tts_model,
+                voice=self.config.openai.tts_voice,
+                api_key=self.config.openai.api_key,
+            )
+            logger.info("   [OK] Primary TTS (self-hosted) initialized")
+        else:
+            logger.info("[DEBUG] TTS CONFIGURATION: ElevenLabs only (self-hosted disabled)")
+        
+        # Fallback/Primary: ElevenLabs TTS
+        if self.config.elevenlabs.tts_enabled and ELEVENLABS_AVAILABLE:
+            if not self.config.elevenlabs.api_key:
+                logger.warning("   [WARN] ELEVENLABS_TTS_API_KEY is missing - TTS fallback disabled")
+            else:
+                try:
+                    # Only pass model if it's provided (custom voices don't need it)
+                    tts_kwargs = {
+                        "api_key": self.config.elevenlabs.api_key,
+                        "voice_id": self.config.elevenlabs.voice_id,
+                    }
+                    if self.config.elevenlabs.model:
+                        tts_kwargs["model"] = self.config.elevenlabs.model
+                    
+                    elevenlabs_tts = elevenlabs.TTS(**tts_kwargs)
+                    model_info = f" ({self.config.elevenlabs.model})" if self.config.elevenlabs.model else ""
+                    logger.info(f"   [OK] {'Fallback' if primary_tts else 'Primary'} TTS (ElevenLabs{model_info}) initialized with voice: {self.config.elevenlabs.voice_id}")
+                    
+                    if primary_tts:
+                        fallback_tts = elevenlabs_tts
+                    else:
+                        primary_tts = elevenlabs_tts
+                except Exception as e:
+                    logger.warning(f"   [WARN] ElevenLabs TTS failed: {e}")
+        elif self.config.elevenlabs.tts_enabled and not ELEVENLABS_AVAILABLE:
+            logger.warning("   [WARN] ElevenLabs plugin not available. Install with: pip install livekit-plugins-elevenlabs")
+        
+        # Check if we have at least one TTS
+        if not primary_tts:
+            raise ConfigurationError(
+                "No TTS configured. Enable either SELF_HOSTED_TTS_ENABLED=true or ELEVENLABS_TTS_ENABLED=true"
+            )
+        
+        # Use fallback wrapper if both are available
+        if fallback_tts:
+            from services.fallback_tts import FallbackTTS
+            tts_plugin = FallbackTTS(
+                primary_tts=primary_tts,
+                fallback_tts=fallback_tts,
+                max_primary_failures=3
+            )
+            logger.info("   [OK] TTS: Self-hosted (primary) -> ElevenLabs (fallback after 3 failures)")
+        else:
+            tts_plugin = primary_tts
+            if self.config.openai.tts_enabled:
+                logger.info("   [OK] TTS: Self-hosted only (no fallback)")
+            else:
+                logger.info("   [OK] TTS: ElevenLabs only (no fallback)")
+        
         return tts_plugin
     
     def _initialize_vad(self) -> silero.VAD:
@@ -259,4 +331,60 @@ class PluginService:
         logger.info("   [OK] Silero VAD plugin initialized (optimized for background noise filtering)")
         
         return vad_plugin
+    
+    async def start_tavus_avatar(
+        self,
+        session: AgentSession,
+        room: rtc.Room
+    ) -> Optional[Any]:
+        """
+        Start Tavus avatar session (primary video source).
+        Falls back to static avatar if Tavus fails.
+        
+        Args:
+            session: AgentSession instance
+            room: LiveKit room instance
+            
+        Returns:
+            Tavus AvatarSession if successful, None if failed/not configured
+        """
+        logger.info("[DEBUG] Tavus Avatar Configuration Check:")
+        logger.info(f"   TAVUS_AVATAR_ENABLED: {self.config.tavus.avatar_enabled}")
+        logger.info(f"   TAVUS_AVAILABLE: {TAVUS_AVAILABLE}")
+        logger.info(f"   TAVUS_API_KEY set: {bool(self.config.tavus.api_key)}")
+        logger.info(f"   TAVUS_PERSONA_ID: {self.config.tavus.persona_id}")
+        logger.info(f"   TAVUS_REPLICA_ID: {self.config.tavus.replica_id}")
+        
+        if not self.config.tavus.avatar_enabled:
+            logger.info("   [INFO] Tavus Avatar disabled (TAVUS_AVATAR_ENABLED=false)")
+            return None
+        
+        if not TAVUS_AVAILABLE:
+            logger.warning("   [WARN] Tavus plugin not available - install with: pip install livekit-plugins-tavus")
+            return None
+        
+        if not self.config.tavus.api_key:
+            logger.warning("   [WARN] TAVUS_API_KEY is missing - Avatar disabled")
+            return None
+        
+        if not (self.config.tavus.persona_id or self.config.tavus.replica_id):
+            logger.warning("   [WARN] TAVUS_PERSONA_ID or TAVUS_REPLICA_ID required - Avatar disabled")
+            return None
+        
+        try:
+            avatar_kwargs = {
+                "api_key": self.config.tavus.api_key,
+            }
+            if self.config.tavus.persona_id:
+                avatar_kwargs["persona_id"] = self.config.tavus.persona_id
+            if self.config.tavus.replica_id:
+                avatar_kwargs["replica_id"] = self.config.tavus.replica_id
+            
+            avatar_session = tavus.AvatarSession(**avatar_kwargs)
+            await avatar_session.start(agent_session=session, room=room)
+            logger.info("   [OK] Tavus Avatar started (primary video source)")
+            return avatar_session
+        except Exception as e:
+            logger.warning(f"   [WARN] Tavus Avatar failed - will use static avatar fallback: {e}")
+            return None
 

@@ -605,6 +605,19 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info(f"[OK] Session components verified: TTS={session.tts is not None}, LLM={session.llm is not None}, Room connected={ctx.room.isconnected()}")
         print(f"[OK] Session components verified", flush=True)
         
+        # Step 7.5: Start Tavus Avatar (if configured) - falls back to static avatar automatically
+        try:
+            avatar_session = await plugin_service.start_tavus_avatar(session, ctx.room)
+            if avatar_session:
+                logger.info("[OK] Tavus Avatar active - video track published")
+                print("[OK] Tavus Avatar active", flush=True)
+            else:
+                logger.info("[INFO] Tavus Avatar not configured - using static avatar fallback")
+                print("[INFO] Using static avatar fallback (Tavus not configured)", flush=True)
+        except Exception as e:
+            logger.warning(f"[WARN] Tavus Avatar initialization error (using static avatar): {e}")
+            print(f"[WARN] Tavus failed - using static avatar fallback", flush=True)
+        
         # Step 7b: Generate initial greeting (AFTER session.start - generate_reply requires session to be running)
         if ctx.room.remote_participants:
             logger.info("[GREETING] Generating initial greeting (session is now running)...")
