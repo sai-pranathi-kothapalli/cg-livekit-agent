@@ -17,13 +17,11 @@ ENV/
 env/
 
 # Logs
+logs/
 *.log
 *.pid
 agent.log
 agent.pid
-entrypoint.log
-job_requests.log
-entrypoint_errors.log
 
 # IDE
 .vscode/
