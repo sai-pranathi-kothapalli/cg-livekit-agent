@@ -14,6 +14,14 @@ from livekit.plugins import (  # type: ignore
     silero,
 )
 
+# LiveAvatar (HeyGen)
+try:
+    from livekit.plugins import liveavatar  # type: ignore
+    LIVEAVATAR_AVAILABLE = True
+except ImportError:
+    LIVEAVATAR_AVAILABLE = False
+    liveavatar = None  # type: ignore
+
 # Google Gemini (primary LLM)
 try:
     from livekit.plugins import google  # type: ignore (for Gemini)
@@ -30,13 +38,6 @@ except ImportError:
     ELEVENLABS_AVAILABLE = False
     elevenlabs = None  # type: ignore
 
-# Tavus Avatar (optional)
-try:
-    from livekit.plugins import tavus  # type: ignore
-    TAVUS_AVAILABLE = True
-except ImportError:
-    TAVUS_AVAILABLE = False
-    tavus = None  # type: ignore
 
 from app.config import Config  # type: ignore
 from app.utils.logger import get_logger  # type: ignore
@@ -332,59 +333,43 @@ class PluginService:
         
         return vad_plugin
     
-    async def start_tavus_avatar(
+    async def start_live_avatar(
         self,
         session: AgentSession,
         room: rtc.Room
     ) -> Optional[Any]:
         """
-        Start Tavus avatar session (primary video source).
-        Falls back to static avatar if Tavus fails.
-        
-        Args:
-            session: AgentSession instance
-            room: LiveKit room instance
-            
-        Returns:
-            Tavus AvatarSession if successful, None if failed/not configured
+        Start LiveAvatar (HeyGen) session.
+        Falls back to static avatar if LiveAvatar fails.
         """
-        logger.info("[DEBUG] Tavus Avatar Configuration Check:")
-        logger.info(f"   TAVUS_AVATAR_ENABLED: {self.config.tavus.avatar_enabled}")
-        logger.info(f"   TAVUS_AVAILABLE: {TAVUS_AVAILABLE}")
-        logger.info(f"   TAVUS_API_KEY set: {bool(self.config.tavus.api_key)}")
-        logger.info(f"   TAVUS_PERSONA_ID: {self.config.tavus.persona_id}")
-        logger.info(f"   TAVUS_REPLICA_ID: {self.config.tavus.replica_id}")
+        logger.info("[DEBUG] LiveAvatar Configuration Check:")
+        logger.info(f"   LIVEAVATAR_ENABLED: {self.config.liveavatar.avatar_enabled}")
+        logger.info(f"   LIVEAVATAR_AVAILABLE: {LIVEAVATAR_AVAILABLE}")
+        logger.info(f"   LIVEAVATAR_API_KEY set: {bool(self.config.liveavatar.api_key)}")
+        logger.info(f"   LIVEAVATAR_AVATAR_ID: {self.config.liveavatar.avatar_id}")
         
-        if not self.config.tavus.avatar_enabled:
-            logger.info("   [INFO] Tavus Avatar disabled (TAVUS_AVATAR_ENABLED=false)")
+        if not self.config.liveavatar.avatar_enabled:
+            logger.info("   [INFO] LiveAvatar disabled (LIVEAVATAR_AVATAR_ENABLED=false)")
             return None
         
-        if not TAVUS_AVAILABLE:
-            logger.warning("   [WARN] Tavus plugin not available - install with: pip install livekit-plugins-tavus")
+        if not LIVEAVATAR_AVAILABLE:
+            logger.warning("   [WARN] LiveAvatar plugin not available")
             return None
         
-        if not self.config.tavus.api_key:
-            logger.warning("   [WARN] TAVUS_API_KEY is missing - Avatar disabled")
-            return None
-        
-        if not (self.config.tavus.persona_id or self.config.tavus.replica_id):
-            logger.warning("   [WARN] TAVUS_PERSONA_ID or TAVUS_REPLICA_ID required - Avatar disabled")
+        if not self.config.liveavatar.api_key:
+            logger.warning("   [WARN] LIVEAVATAR_API_KEY is missing - Avatar disabled")
             return None
         
         try:
-            avatar_kwargs = {
-                "api_key": self.config.tavus.api_key,
-            }
-            if self.config.tavus.persona_id:
-                avatar_kwargs["persona_id"] = self.config.tavus.persona_id
-            if self.config.tavus.replica_id:
-                avatar_kwargs["replica_id"] = self.config.tavus.replica_id
-            
-            avatar_session = tavus.AvatarSession(**avatar_kwargs)
+            avatar_session = liveavatar.AvatarSession(
+                avatar_id=self.config.liveavatar.avatar_id,
+                api_key=self.config.liveavatar.api_key,
+            )
             await avatar_session.start(agent_session=session, room=room)
-            logger.info("   [OK] Tavus Avatar started (primary video source)")
+            logger.info("   [OK] LiveAvatar (HeyGen) started")
             return avatar_session
         except Exception as e:
-            logger.warning(f"   [WARN] Tavus Avatar failed - will use static avatar fallback: {e}")
+            logger.warning(f"   [WARN] LiveAvatar failed - will use static avatar fallback: {e}")
             return None
+    
 

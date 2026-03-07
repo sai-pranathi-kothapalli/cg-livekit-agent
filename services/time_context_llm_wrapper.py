@@ -164,7 +164,12 @@ def sanitize_chat_context(chat_ctx) -> None:
     Never crashes: if mutation fails, we continue. Prefer multiple calls to guarantee cleanup.
     """
     try:
-        items = getattr(chat_ctx, "messages", None) or getattr(chat_ctx, "items", [])
+        items = getattr(chat_ctx, "messages", [])
+        if not isinstance(items, list) and hasattr(chat_ctx, "items") and not callable(chat_ctx.items):
+            items = chat_ctx.items
+        elif not isinstance(items, list):
+            items = []
+
         
         # Process all messages (including system) to remove [INTERNAL] blocks
         # DO NOT clear messages entirely - only remove the [INTERNAL] blocks
@@ -201,7 +206,12 @@ def sanitize_chat_context(chat_ctx) -> None:
 def _log_leak_if_any(chat_ctx) -> None:
     """Debug: log once if any message still contains [INTERNAL] after sanitization."""
     try:
-        items = getattr(chat_ctx, "messages", None) or getattr(chat_ctx, "items", [])
+        items = getattr(chat_ctx, "messages", [])
+        if not isinstance(items, list) and hasattr(chat_ctx, "items") and not callable(chat_ctx.items):
+            items = chat_ctx.items
+        elif not isinstance(items, list):
+            items = []
+
         for i, m in enumerate(items):
             content = getattr(m, "content", None)
             if content is None:
@@ -217,7 +227,12 @@ def _log_leak_if_any(chat_ctx) -> None:
 def _has_user_message(chat_ctx) -> bool:
     """Return True if chat_ctx contains at least one user message (candidate has spoken)."""
     try:
-        items = getattr(chat_ctx, "messages", None) or getattr(chat_ctx, "items", [])
+        items = getattr(chat_ctx, "messages", [])
+        if not isinstance(items, list) and hasattr(chat_ctx, "items") and not callable(chat_ctx.items):
+            items = chat_ctx.items
+        elif not isinstance(items, list):
+            items = []
+
         for m in items:
             if getattr(m, "role", None) == "user":
                 return True
@@ -229,7 +244,12 @@ def _has_user_message(chat_ctx) -> bool:
 def _has_code_submission_override(chat_ctx) -> bool:
     """Return True if any message in chat_ctx contains the code-submission override marker."""
     try:
-        items = getattr(chat_ctx, "messages", None) or getattr(chat_ctx, "items", [])
+        items = getattr(chat_ctx, "messages", [])
+        if not isinstance(items, list) and hasattr(chat_ctx, "items") and not callable(chat_ctx.items):
+            items = chat_ctx.items
+        elif not isinstance(items, list):
+            items = []
+
         for m in items:
             content = getattr(m, "content", "") or ""
             if isinstance(content, list):
@@ -271,8 +291,12 @@ class TimeContextLLMWrapper:
 
         # 0) Intercept and hide [INTERNAL_TRIGGER] from the LLM
         # This ensures the model only sees the turn instructions, not the trigger message.
-        items = getattr(chat_ctx, "messages", None) or getattr(chat_ctx, "items", [])
+        items = getattr(chat_ctx, "messages", [])
+        if not isinstance(items, list) and hasattr(chat_ctx, "items") and not callable(chat_ctx.items):
+            items = chat_ctx.items
+        
         if items and len(items) > 0:
+
             last_msg = items[-1]
             last_content = getattr(last_msg, "content", "")
             if last_content == "[INTERNAL_TRIGGER]":
