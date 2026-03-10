@@ -294,7 +294,21 @@ class FallbackSynthesizeStream:
         if self._active_stream is None or not self._initialized:
             raise RuntimeError("Stream context not entered")
         return self._active_stream.flush()
-    
+
+    def end_input(self) -> None:
+        """Signal end of input to the active stream.
+
+        LiveKit agents framework calls this after pushing all text chunks
+        (see livekit/agents/voice/agent.py). Without this proxy the call
+        would fall through to __getattr__ on FallbackTTS (the parent wrapper),
+        which proxies to the *TTS* object rather than the *stream*, causing an
+        AttributeError or silently doing nothing — leaving ElevenLabs waiting
+        for more input and never flushing audio.
+        """
+        if self._active_stream is None or not self._initialized:
+            raise RuntimeError("Stream context not entered")
+        return self._active_stream.end_input()
+
     async def aclose(self):
         """Close the active stream."""
         if self._active_stream:

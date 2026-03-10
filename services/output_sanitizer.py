@@ -132,12 +132,19 @@ class OutputSanitizerState:
     def take_after_marker(self) -> str:
         """If buffer contains [END INTERNAL CONTEXT ... ], return content after it and set passthrough."""
         if "[END INTERNAL CONTEXT" not in self.buffer:
-            # Fallback: if buffer is large and no marker, sanitize and pass through rest of stream
+            # Fallback: if buffer is very large with no closing marker, the [INTERNAL] block
+            # never closed (e.g. model truncated output mid-block). DISCARD the buffered
+            # content entirely — never sanitize-and-passthrough, because sanitization may
+            # be incomplete and partial internal text would leak to TTS / transcript.
             if len(self.buffer) >= self.MAX_BUFFER_BEFORE_PASSTHROUGH:
-                out = sanitize_agent_response(self.buffer)
+                logger.warning(
+                    "[OutputSanitizer] Buffer reached %d chars with no [END INTERNAL CONTEXT] "
+                    "marker — discarding buffered content entirely to prevent context leakage.",
+                    len(self.buffer),
+                )
                 self.buffer = ""
                 self.passthrough = True
-                return out
+                return ""  # Return empty: nothing reaches TTS or transcript from this block.
             return ""
         idx = self.buffer.find("[END INTERNAL CONTEXT")
         end = self.buffer.find("]", idx) + 1

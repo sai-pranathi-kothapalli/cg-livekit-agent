@@ -267,9 +267,12 @@ class PluginService:
             else:
                 try:
                     # Only pass model if it's provided (custom voices don't need it)
+                    # auto_mode=False: use basic WordTokenizer instead of blingfire SentenceTokenizer.
+                    # blingfire can fail to emit sentences causing "no audio frames" APIError.
                     tts_kwargs = {
                         "api_key": self.config.elevenlabs.api_key,
                         "voice_id": self.config.elevenlabs.voice_id,
+                        "auto_mode": False,
                     }
                     if self.config.elevenlabs.model:
                         tts_kwargs["model"] = self.config.elevenlabs.model

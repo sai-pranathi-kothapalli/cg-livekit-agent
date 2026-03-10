@@ -6,8 +6,21 @@ from typing import List, Dict, Any
 
 _state: Dict[str, Any] = {
     "violations": [],
-    "code_submissions": []
+    "code_submissions": [],
+    "current_question": ""
 }
+
+def set_current_question(question: str) -> None:
+    """
+    Set the current interview question being asked.
+    """
+    _state["current_question"] = question
+
+def get_current_question() -> str:
+    """
+    Get the current interview question being asked.
+    """
+    return _state.get("current_question", "")
 
 def add_violation(alert_type: str, message: str, timestamp: str) -> None:
     _state["violations"].append({
@@ -66,3 +79,4 @@ def clear_state() -> None:
     """
     _state["violations"].clear()
     _state["code_submissions"].clear()
+    _state["current_question"] = ""

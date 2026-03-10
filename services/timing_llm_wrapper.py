@@ -184,96 +184,109 @@ class TimingContextWrapper:
             pass
 
     async def __anext__(self):
-        """Iterate and track timing; sanitize output to strip internal context."""
-        try:
-            chunk = await self._cm.__anext__()
+        """Iterate and track timing; sanitize output to strip internal context.
 
-            if not self._first_chunk and self._timer:
-                self._first_chunk = True
-                self._timer.checkpoint("First chunk (TTFB)")
-                logger.info("🔵 [LLM] Gemini first chunk received (TTFB) - stream started")
-                try:
-                    import sys
-                    print("🔵 [LLM] Gemini first chunk received (TTFB) - stream started", flush=True)
-                except Exception:
-                    pass
+        Uses an outer while-True loop so that when the sanitizer is buffering an
+        [INTERNAL] block, empty intermediate chunks are never forwarded to TTS.
+        Returning an empty chunk to TTS can cause it to treat the silence as
+        end-of-utterance and prematurely cut off the interviewer's question.
+        """
+        # Outer loop: keeps fetching until we have real content (or stream ends).
+        while True:
+            try:
+                chunk = await self._cm.__anext__()
 
-            self._chunk_count += 1
+                if not self._first_chunk and self._timer:
+                    self._first_chunk = True
+                    self._timer.checkpoint("First chunk (TTFB)")
+                    logger.info("🔵 [LLM] Gemini first chunk received (TTFB) - stream started")
+                    try:
+                        import sys
+                        print("🔵 [LLM] Gemini first chunk received (TTFB) - stream started", flush=True)
+                    except Exception:
+                        pass
 
-            chunk_text = ""
-            delta = getattr(chunk, "delta", None)
-            if delta is not None and getattr(delta, "content", None):
-                c = delta.content
-                chunk_text = c if isinstance(c, str) else ""
-            elif hasattr(chunk, "content") and isinstance(getattr(chunk, "content"), str):
-                chunk_text = chunk.content or ""
-            elif hasattr(chunk, "text"):
-                chunk_text = chunk.text if isinstance(chunk.text, str) else ""
-            elif isinstance(chunk, str):
-                chunk_text = chunk
-            elif getattr(chunk, "choices", None):
-                choices = chunk.choices
-                if choices and len(choices) > 0:
-                    d = getattr(choices[0], "delta", None)
-                    if d and hasattr(d, "content") and d.content:
-                        chunk_text = d.content if isinstance(d.content, str) else ""
-            elif getattr(chunk, "parts", None):
-                for part in chunk.parts:
-                    if hasattr(part, "text") and part.text:
-                        chunk_text += part.text if isinstance(part.text, str) else ""
-            elif getattr(chunk, "candidates", None):
-                cands = chunk.candidates
-                if cands and len(cands) > 0:
-                    content = getattr(cands[0], "content", None)
-                    if content and getattr(content, "parts", None):
-                        for part in content.parts:
-                            if hasattr(part, "text") and part.text:
-                                chunk_text += part.text if isinstance(part.text, str) else ""
+                self._chunk_count += 1
 
-            # Only sanitize if we see [INTERNAL in this chunk or are already buffering
-            if self._sanitizer_state.should_passthrough():
-                # Marker already found in previous chunk — pass through directly
-                if chunk_text:
-                    self._total_chars += len(chunk_text)
-                return chunk
+                chunk_text = ""
+                delta = getattr(chunk, "delta", None)
+                if delta is not None and getattr(delta, "content", None):
+                    c = delta.content
+                    chunk_text = c if isinstance(c, str) else ""
+                elif hasattr(chunk, "content") and isinstance(getattr(chunk, "content"), str):
+                    chunk_text = chunk.content or ""
+                elif hasattr(chunk, "text"):
+                    chunk_text = chunk.text if isinstance(chunk.text, str) else ""
+                elif isinstance(chunk, str):
+                    chunk_text = chunk
+                elif getattr(chunk, "choices", None):
+                    choices = chunk.choices
+                    if choices and len(choices) > 0:
+                        d = getattr(choices[0], "delta", None)
+                        if d and hasattr(d, "content") and d.content:
+                            chunk_text = d.content if isinstance(d.content, str) else ""
+                elif getattr(chunk, "parts", None):
+                    for part in chunk.parts:
+                        if hasattr(part, "text") and part.text:
+                            chunk_text += part.text if isinstance(part.text, str) else ""
+                elif getattr(chunk, "candidates", None):
+                    cands = chunk.candidates
+                    if cands and len(cands) > 0:
+                        content = getattr(cands[0], "content", None)
+                        if content and getattr(content, "parts", None):
+                            for part in content.parts:
+                                if hasattr(part, "text") and part.text:
+                                    chunk_text += part.text if isinstance(part.text, str) else ""
 
-            # Check if [INTERNAL detected — only then start buffering
-            if "[INTERNAL" not in self._sanitizer_state.buffer and "[INTERNAL" not in chunk_text:
-                # Normal response — pass through directly, no buffering needed
-                if chunk_text:
-                    self._total_chars += len(chunk_text)
-                self._sanitizer_state.passthrough = True  # skip buffering for rest of stream
-                return chunk
+                # Only sanitize if we see [INTERNAL in this chunk or are already buffering
+                if self._sanitizer_state.should_passthrough():
+                    # Marker already found in previous chunk — pass through directly
+                    if chunk_text:
+                        self._total_chars += len(chunk_text)
+                    return chunk
 
-            # [INTERNAL detected — buffer and wait for closing marker
-            self._sanitizer_state.add(chunk_text)
-            after = self._sanitizer_state.take_after_marker()
-            if after:
-                # Marker found — return only content after it, enable passthrough
-                self._total_chars += len(after)
-                return _make_chunk_with_content(after, chunk)
+                # Check if [INTERNAL detected — only then start buffering
+                if "[INTERNAL" not in self._sanitizer_state.buffer and "[INTERNAL" not in chunk_text:
+                    # Normal response — pass through directly, no buffering needed
+                    if chunk_text:
+                        self._total_chars += len(chunk_text)
+                    self._sanitizer_state.passthrough = True  # skip buffering for rest of stream
+                    return chunk
 
-            # Still buffering — return empty chunk to suppress TTS
-            return _make_chunk_with_content("", chunk)
+                # [INTERNAL detected — buffer and wait for closing marker
+                self._sanitizer_state.add(chunk_text)
+                after = self._sanitizer_state.take_after_marker()
+                if after:
+                    # Marker found — return only content after it, enable passthrough
+                    self._total_chars += len(after)
+                    return _make_chunk_with_content(after, chunk)
 
-        except StopAsyncIteration:
-            # Flush any remaining buffered content (sanitizer may still hold chunks)
-            if self._sanitizer_state and not self._sanitizer_state.should_passthrough():
-                remaining = self._sanitizer_state.flush_remaining()
-                if remaining:
-                    # If we have remaining content, we need to emit it before stopping
-                    # Store it and raise after emitting - but we can't emit after StopAsyncIteration
-                    # So we'll log it and let the sanitizer handle it on next stream
-                    logger.warning(f"⚠️  Stream ended with {len(remaining)} chars still buffered (no [END INTERNAL CONTEXT] marker found)")
-                    self._total_chars += len(remaining)
-            
-            # Log tokens when stream ends (LiveKit may not call __aexit__, so we log here too)
-            self._log_token_usage()
-            self._token_logged = True
-            if self._timer:
-                self._timer.end(f"{self._total_chars} chars generated")
-                logger.info(f"    📊 Streamed {self._chunk_count} chunks")
-            raise
-        except Exception as e:
-            logger.error(f"⚠️  Error in timing wrapper __anext__: {e}", exc_info=True)
-            raise
+                # Still buffering [INTERNAL] block — do NOT return empty chunk to TTS.
+                # Loop back to fetch the next stream chunk instead, so TTS never sees
+                # silence mid-question and prematurely ends the utterance.
+                continue
+
+            except StopAsyncIteration:
+                # Flush any remaining buffered content (sanitizer may still hold chunks)
+                if self._sanitizer_state and not self._sanitizer_state.should_passthrough():
+                    remaining = self._sanitizer_state.flush_remaining()
+                    if remaining:
+                        # Stream ended while still buffering — discard to prevent leakage.
+                        # (take_after_marker already handles the discard; flush_remaining
+                        #  is the last safety net and its output is intentionally dropped here.)
+                        logger.warning(
+                            f"⚠️  Stream ended with {len(remaining)} chars still buffered "
+                            f"(no [END INTERNAL CONTEXT] marker) — discarding to prevent leakage."
+                        )
+                        self._total_chars += len(remaining)
+
+                # Log tokens when stream ends (LiveKit may not call __aexit__, so we log here too)
+                self._log_token_usage()
+                self._token_logged = True
+                if self._timer:
+                    self._timer.end(f"{self._total_chars} chars generated")
+                    logger.info(f"    📊 Streamed {self._chunk_count} chunks")
+                raise
+            except Exception as e:
+                logger.error(f"⚠️  Error in timing wrapper __anext__: {e}", exc_info=True)
+                raise

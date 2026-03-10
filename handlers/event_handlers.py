@@ -13,6 +13,16 @@ from agents.utils import get_track_source_name
 from app.utils.logger import get_logger  # type: ignore
 from services.time_context_llm_wrapper import generate_reply_with_instructions
 
+# Lazy imports for evaluation service to avoid circular dependencies
+def _get_evaluation_service():
+    try:
+        from app.services.evaluation_service import EvaluationService
+        from app.config import get_config
+        return EvaluationService(get_config())
+    except Exception as e:
+        logger.warning(f"Could not initialize EvaluationService in agent: {e}")
+        return None
+
 logger = get_logger(__name__)
 
 
@@ -137,8 +147,51 @@ def setup_session_event_handlers(
                     log.warning(f"Could not schedule user transcript send: {e}")
             if is_final:
                 log.debug("[OK] [STT] Final transcript received - will trigger LLM")
+                
+                # TRIGGER INCREMENTAL EVALUATION (Refactor Goal)
+                if transcript and booking_token:
+                    async def _trigger_incremental_eval():
+                        try:
+                            # 1. Find the last assistant message (the question being answered)
+                            last_question = ""
+                            if hasattr(session, 'chat_ctx') and hasattr(session.chat_ctx, 'messages'):
+                                # Look backwards for the first assistant message that isn't internal
+                                for msg in reversed(session.chat_ctx.messages):
+                                    role = getattr(msg, 'role', '')
+                                    if role != 'assistant':
+                                        continue
+                                        
+                                    content = getattr(msg, 'content', '')
+                                    
+                                    # Handle LiveKit ChatMessage content which can be a list of ChatContent
+                                    text_content = ""
+                                    if isinstance(content, list):
+                                        for item in content:
+                                            if hasattr(item, 'text'):
+                                                text_content += item.text
+                                            elif isinstance(item, str):
+                                                text_content += item
+                                    else:
+                                        text_content = str(content)
+                                        
+                                    if text_content and "[INTERNAL" not in text_content:
+                                        last_question = text_content
+                                        break
+                            
+                            if last_question:
+                                eval_service = _get_evaluation_service()
+                                if eval_service:
+                                    # Record the evaluation in the backend asynchronously
+                                    logger.info(f"📊 [EVAL] Triggering incremental evaluation for question: '{last_question[:50]}...'")
+                                    await eval_service.evaluate_answer(booking_token, last_question, transcript)
+                                    logger.info("✅ [EVAL] Incremental evaluation triggered successfully")
+                        except Exception as e:
+                            logger.warning(f"⚠️  Failed to trigger incremental evaluation: {e}")
+                    
+                    # Run in background so it doesn't slow down the agent's turn
+                    asyncio.create_task(_trigger_incremental_eval())
         except Exception as e:
-            log.error(f"[ERR] Error in user_input_transcribed handler: {e}", exc_info=True)
+            logger.error(f"[ERR] Error in user_input_transcribed handler: {e}", exc_info=True)
             print(f"[ERR] Error in user_input_transcribed handler: {e}")
 
     @session.on("error")
@@ -182,6 +235,11 @@ def setup_session_event_handlers(
                     print(f"📊 [METRICS] STT: {stt_latency:.3f}s, LLM: {llm_latency:.3f}s, TTS: {tts_latency:.3f}s")
         except Exception as e:
             log.debug(f"Error in metrics_collected handler: {e}")
+
+    @session.on("closed")
+    def on_session_closed():
+        log.info("🔌 Session closed - cancelling nudge timer")
+        cancel_nudge_timer()
 
     log.info("[OK] Session event handlers installed for speech tracking")
     print("[OK] Session event handlers installed for speech tracking")

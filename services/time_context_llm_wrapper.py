@@ -42,6 +42,10 @@ async def generate_reply_with_instructions(session, instructions: str) -> None:
     try:
         # Use a distinctive trigger that the wrapper will hide from the LLM.
         # This ensures session.generate_reply() actually triggers a call.
+        if hasattr(session, 'is_running') and not session.is_running():
+            logger.debug("⏰ Session not running, skipping nudge/instruction trigger")
+            return
+
         await session.generate_reply(instructions="[INTERNAL_TRIGGER]")
         
         # Cleanup: Remove the trigger from the session's persistent chat_ctx
@@ -53,6 +57,13 @@ async def generate_reply_with_instructions(session, instructions: str) -> None:
                     messages.pop()
         except (AttributeError, IndexError):
             pass
+    except RuntimeError as e:
+        if "isn't running" in str(e):
+            logger.debug("⏰ Caught 'AgentSession isn't running' - ignoring nudge/trigger")
+        else:
+            raise
+    except Exception as e:
+        logger.warning(f"⏰ Error triggering instruction-based reply: {e}")
     finally:
         # Always clear after the turn to ensure no leaks into subsequent turns
         set_turn_instructions(None)

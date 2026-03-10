@@ -88,8 +88,9 @@ async def entrypoint(ctx: JobContext) -> None:
         
         # Extract booking token from room name or metadata
         booking_token = None
-        room_name = ctx.room.name
+        room_name = "unknown"
         try:
+            room_name = ctx.room.name
             # Try to extract from room name (format: "interview_<token>" or just token)
             if room_name.startswith("interview_"):
                 booking_token = room_name.replace("interview_", "")
@@ -435,7 +436,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 false_interruption_timeout=2.0,  # [OK] Wait 2 seconds before resuming after false interruption
                 resume_false_interruption=True,  # [OK] Auto-resume if background noise triggers VAD
                 # CRITICAL: Increase min_endpointing_delay to give STT more time to finalize
-                min_endpointing_delay=1.5,
+                min_endpointing_delay=2.0,
             )
             logger.info("[OK] Step 6: Success - AgentSession created!")
             print("[OK] Step 6: Success - AgentSession created!", flush=True)
