@@ -237,80 +237,56 @@ class PluginService:
     
     def _initialize_tts(self):
         """
-        Initialize TTS plugin: Self-hosted (primary) -> ElevenLabs (fallback), or ElevenLabs only.
+        Initialize TTS plugin: Either Self-hosted or ElevenLabs (mutually exclusive).
         
         Returns:
             Configured TTS plugin
         """
-        primary_tts = None
-        fallback_tts = None
+        tts_plugin = None
         
-        # Check if self-hosted TTS is enabled
+        # 1. Try Self-hosted TTS
         if self.config.openai.tts_enabled:
-            logger.info("[DEBUG] TTS CONFIGURATION: Self-hosted (primary) -> ElevenLabs (fallback)")
+            logger.info("[DEBUG] TTS CONFIGURATION: Self-hosted (primary)")
             logger.info(f"   Base URL: {self.config.openai.tts_base_url}")
             logger.info(f"   Model: {self.config.openai.tts_model}, Voice: {self.config.openai.tts_voice}")
-            primary_tts = openai.TTS(
+            tts_plugin = openai.TTS(
                 base_url=f"{self.config.openai.tts_base_url}/tts/v1",
                 model=self.config.openai.tts_model,
                 voice=self.config.openai.tts_voice,
                 api_key=self.config.openai.api_key,
             )
-            logger.info("   [OK] Primary TTS (self-hosted) initialized")
-        else:
-            logger.info("[DEBUG] TTS CONFIGURATION: ElevenLabs only (self-hosted disabled)")
-        
-        # Fallback/Primary: ElevenLabs TTS
-        if self.config.elevenlabs.tts_enabled and ELEVENLABS_AVAILABLE:
+            logger.info("   [OK] Self-hosted TTS initialized")
+            
+        # 2. Try ElevenLabs TTS
+        elif self.config.elevenlabs.tts_enabled and ELEVENLABS_AVAILABLE:
             if not self.config.elevenlabs.api_key:
-                logger.warning("   [WARN] ELEVENLABS_TTS_API_KEY is missing - TTS fallback disabled")
-            else:
-                try:
-                    # Only pass model if it's provided (custom voices don't need it)
-                    # auto_mode=False: use basic WordTokenizer instead of blingfire SentenceTokenizer.
-                    # blingfire can fail to emit sentences causing "no audio frames" APIError.
-                    tts_kwargs = {
-                        "api_key": self.config.elevenlabs.api_key,
-                        "voice_id": self.config.elevenlabs.voice_id,
-                        "auto_mode": False,
-                    }
-                    if self.config.elevenlabs.model:
-                        tts_kwargs["model"] = self.config.elevenlabs.model
-                    
-                    elevenlabs_tts = elevenlabs.TTS(**tts_kwargs)
-                    model_info = f" ({self.config.elevenlabs.model})" if self.config.elevenlabs.model else ""
-                    logger.info(f"   [OK] {'Fallback' if primary_tts else 'Primary'} TTS (ElevenLabs{model_info}) initialized with voice: {self.config.elevenlabs.voice_id}")
-                    
-                    if primary_tts:
-                        fallback_tts = elevenlabs_tts
-                    else:
-                        primary_tts = elevenlabs_tts
-                except Exception as e:
-                    logger.warning(f"   [WARN] ElevenLabs TTS failed: {e}")
+                raise ConfigurationError("ELEVENLABS_TTS_API_KEY is missing but ElevenLabs TTS is enabled.")
+                
+            try:
+                # auto_mode=False: use basic WordTokenizer instead of blingfire SentenceTokenizer.
+                tts_kwargs = {
+                    "api_key": self.config.elevenlabs.api_key,
+                    "voice_id": self.config.elevenlabs.voice_id,
+                    "auto_mode": False,
+                }
+                if self.config.elevenlabs.model:
+                    tts_kwargs["model"] = self.config.elevenlabs.model
+                
+                tts_plugin = elevenlabs.TTS(**tts_kwargs)
+                model_info = f" ({self.config.elevenlabs.model})" if self.config.elevenlabs.model else ""
+                logger.info(f"   [OK] ElevenLabs TTS{model_info} initialized with voice: {self.config.elevenlabs.voice_id}")
+            except Exception as e:
+                logger.error(f"   [ERROR] ElevenLabs TTS failed to initialize: {e}")
+                raise ServiceError(f"ElevenLabs TTS initialization failed: {e}", "PluginService")
+
         elif self.config.elevenlabs.tts_enabled and not ELEVENLABS_AVAILABLE:
-            logger.warning("   [WARN] ElevenLabs plugin not available. Install with: pip install livekit-plugins-elevenlabs")
+            raise ConfigurationError("ElevenLabs plugin not available but enabled. Install with: pip install livekit-plugins-elevenlabs")
         
-        # Check if we have at least one TTS
-        if not primary_tts:
+        # 3. Final Check
+        if not tts_plugin:
             raise ConfigurationError(
-                "No TTS configured. Enable either SELF_HOSTED_TTS_ENABLED=true or ELEVENLABS_TTS_ENABLED=true"
+                "No TTS configured. Enable exactly one: SELF_HOSTED_TTS_ENABLED=true OR ELEVENLABS_TTS_ENABLED=true"
             )
-        
-        # Use fallback wrapper if both are available
-        if fallback_tts:
-            from services.fallback_tts import FallbackTTS
-            tts_plugin = FallbackTTS(
-                primary_tts=primary_tts,
-                fallback_tts=fallback_tts,
-                max_primary_failures=3
-            )
-            logger.info("   [OK] TTS: Self-hosted (primary) -> ElevenLabs (fallback after 3 failures)")
-        else:
-            tts_plugin = primary_tts
-            if self.config.openai.tts_enabled:
-                logger.info("   [OK] TTS: Self-hosted only (no fallback)")
-            else:
-                logger.info("   [OK] TTS: ElevenLabs only (no fallback)")
         
         return tts_plugin
     
