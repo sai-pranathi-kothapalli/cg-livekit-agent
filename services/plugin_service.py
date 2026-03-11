@@ -263,11 +263,11 @@ class PluginService:
                 raise ConfigurationError("ELEVENLABS_TTS_API_KEY is missing but ElevenLabs TTS is enabled.")
                 
             try:
-                # auto_mode=False: use basic WordTokenizer instead of blingfire SentenceTokenizer.
+                # Use default auto_mode (True): uses blingfire for stable sentence tokenization.
+                # Requires 'blingfire' package and 'livekit-blingfire' plugin.
                 tts_kwargs = {
                     "api_key": self.config.elevenlabs.api_key,
                     "voice_id": self.config.elevenlabs.voice_id,
-                    "auto_mode": False,
                 }
                 if self.config.elevenlabs.model:
                     tts_kwargs["model"] = self.config.elevenlabs.model
