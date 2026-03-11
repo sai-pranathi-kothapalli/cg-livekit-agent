@@ -184,8 +184,23 @@ async def run_interview_time_loop(
 
                 try:
                     await generate_reply_with_instructions(session, instructions="END_INTERVIEW")
-                    await asyncio.sleep(5)
-                    logger.info("✅ Closing message completed")
+                    
+                    # Dynamic wait for TTS to finish speaking
+                    logger.info("⏳ Waiting for agent to finish closing statement...")
+                    max_wait = 30  # 30 seconds max
+                    waited = 0
+                    while waited < max_wait:
+                        # Agent state 'listening' means it finished speaking and is waiting for user
+                        if session.agent_state == "listening":
+                            logger.info("✅ Agent finished speaking closing statement")
+                            break
+                        await asyncio.sleep(1)
+                        waited += 1
+                    
+                    if waited >= max_wait:
+                        logger.warning("⚠️  Timed out waiting for agent to finish speaking closing statement")
+                    
+                    logger.info("✅ Closing message flow completed")
                 except Exception as e:
                     logger.warning("⚠️  Could not generate closing message: %s", e)
 
