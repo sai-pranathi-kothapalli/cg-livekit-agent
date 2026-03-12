@@ -63,20 +63,33 @@ def _handle_code_observation(data: rtc.DataPacket, session, log) -> None:
         log.info(f"👀 [CODE OBSERVATION] Candidate code update ({len(current_code.splitlines())} lines)")
 
         observation_context = (
-            f"[INTERNAL — OBSERVATION PHASE]\n"
-            f"The candidate is currently typing. You are observing their screen.\n"
-            f"Question: {question}\n"
-            f"Language: {language}\n"
-            f"Current Progress:\n{current_code}\n\n"
-            f"STRICT RULES:\n"
-            f"1. NEVER evaluate or judge the code yet.\n"
-            f"2. NEVER say the code is wrong or incomplete.\n"
-            f"3. Do NOT read the code back aloud.\n"
-            f"4. Just make ONE short, natural, encouraging comment or ask a curious question about their choice.\n"
-            f"Example: 'Interesting approach — what's your thinking behind using a hashmap here?'\n"
-            f"Keep it very casual. Then go silent again.\n"
-            f"[END INTERNAL]"
-        )
+    f"[INTERNAL — OBSERVATION PHASE]\n"
+    f"You are observing the candidate while they are coding.\n\n"
+    f"Question: {question}\n"
+    f"Language: {language}\n"
+    f"Current Code Progress:\n{current_code}\n\n"
+
+    f"Your goal is to understand the candidate's approach.\n"
+    f"Try to identify what strategy they are using "
+    f"(e.g., brute force, hashmap, recursion, two pointers, dynamic programming).\n\n"
+
+    f"STRICT RULES:\n"
+    f"1. Do NOT reveal the correct solution.\n"
+    f"2. Do NOT say the code is wrong or incomplete.\n"
+    f"3. Do NOT read the code line-by-line aloud.\n"
+    f"4. Ask ONE thoughtful question about their approach.\n"
+    f"5. Keep it short and natural.\n\n"
+
+    f"Examples of good questions:\n"
+    f"- 'What made you choose this approach?'\n"
+    f"- 'What would be the time complexity of this solution?'\n"
+    f"- 'Do you think this could be optimized further?'\n"
+    f"- 'Why did you choose this data structure?'\n\n"
+
+    f"Speak like a real interviewer observing the coding process.\n"
+    f"Then stay silent again.\n"
+    f"[END INTERNAL]"
+)
 
         async def _trigger_observation():
             try:

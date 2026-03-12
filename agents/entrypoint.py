@@ -469,26 +469,38 @@ async def entrypoint(ctx: JobContext) -> None:
             "or the interview type includes coding or programming problems (e.g. recruiter instructions or prompt mention technical/coding evaluation or programming problems). "
             "Programming problems means you should ask coding questions. Otherwise skip the coding phase and use that time for MCQ and logical reasoning."
         )
-        # If recruiter prompt or instructions mention programming/coding or language names, require at least one live coding question
+        # Detect if coding is required based on keywords requested by user: python, java, sql, code, c
         _prompt_lower = ((agent_instructions or "") + (booking_prompt or "")).lower()
-        _coding_keywords = ("programming", "coding", "programming problems", "java", "python", "program","sql","c","cpp","javascript","typescript","html","css","react","vue","angular","nodejs","express","fastapi","flask","django","sql","postgresql","mysql","mongodb","oracle","sqlite","aws","azure","gcp","kubernetes","docker","git","github","gitlab","jenkins","ci/cd","machine learning","ai","deep learning","nlp","computer vision","data science","c","c++","c#","go","rust","php","ruby","swift","kotlin","dart","tailwind","bootstrap","material ui","redux","graphql","rest api","microservices","tensorflow","pytorch","pandas","numpy","scikit-learn","keras","opencv","matplotlib","seaborn","spark","hadoop","docker compose","terraform","ansible","linux","unix","windows","macos","flutter","react native","ionic","xamarin","firebase","supabase","redis","elasticsearch","nginx","apache","junit","selenium","postman","agile","scrum")
-        if any(kw in _prompt_lower for kw in _coding_keywords):
+        _technical_keywords = ("python", "java", "sql", "code", "c ", " c ", "cpp", "javascript", "typescript", "coding", "programming")
+        requires_coding_logic = any(kw in _prompt_lower for kw in _technical_keywords)
+
+        if requires_coding_logic:
             agent_instructions += (
                 "\n\nREQUIRED: This interview mentions programming, coding, or a programming language (e.g. Java, Python). You MUST ask at least one live coding question. "
-                "Ask it during the technical phase (when current_phase=technical). Guide the candidate to open the code editor (</> in the bottom bar). "
+                "Ask it during the technical phase. Guide the candidate to open the code editor (</> in the bottom bar). "
                 "Do not skip the coding question; even in a short interview, include one coding problem."
             )
             logger.info("[OK] Custom prompt contains coding-related keyword; REQUIRED: at least one live coding question")
-
-        if not agent_instructions:
-            logger.info("[INFO] No custom instructions or prompt found - using Agent defaults (hardcoded phase-based prompt)")
-            print("[INFO] Using default (hardcoded) prompt - no system instructions or custom prompt set", flush=True)
         else:
-            logger.info(
-                "[OK] Using dashboard instructions: system_instructions + custom prompt (booking_prompt). "
-                "Interview will follow these, not the hardcoded default prompt."
+            logger.info("[INFO] No coding keywords found; skipping mandatory coding requirement.")
+
+        if not system_instructions:
+            error_msg = (
+                "❌ [NO SYSTEM INSTRUCTIONS] The dashboard has no system instructions configured. "
+                "Please add system instructions in the dashboard before starting an interview. "
+                "The interview cannot proceed without instructions."
             )
-            print("[OK] Using system instructions + custom prompt for this interview", flush=True)
+            logger.critical(error_msg)
+            print(error_msg, flush=True)
+            raise RuntimeError(
+                "No system instructions found. Configure system instructions in the dashboard and retry."
+            )
+
+        logger.info(
+            "[OK] Using dashboard instructions: system_instructions + custom prompt (booking_prompt). "
+            "Interview will follow these."
+        )
+        print("[OK] Using system instructions + custom prompt for this interview", flush=True)
         
         # Substitute placeholders (e.g. {name}, {full_name}, {email}) from candidate profile
         if agent_instructions:
@@ -732,6 +744,7 @@ async def entrypoint(ctx: JobContext) -> None:
             config=config,
             slot_start_ist=slot_start_ist_loop,
             scheduled_duration_minutes=scheduled_duration_minutes,
+            requires_coding=requires_coding_logic,
         )
 
         logger.info("=" * 60)

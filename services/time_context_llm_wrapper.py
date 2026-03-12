@@ -77,81 +77,107 @@ def _get_questions_asked() -> int:
         return 0
 
 
-def _focus_display_name(focus: str) -> str:
+def _focus_display_name(focus: str, requires_coding: bool = True) -> str:
     """Human-readable focus name for internal context."""
-    return {
-        "intro": "Introduction",
-        "technical": "Technical",
-        "coding": "Coding",
-        "final": "Final questions",
-        "wrap_up": "Wrap up",
-        "conclude": "Conclusion",
-    }.get(focus, focus.replace("_", " ").title())
+    names = {
+        "intro":          "Introduction",
+        "assessment":     "Assessment (Technical / MCQ)",
+        "coding_window":  "Coding & Debugging" if requires_coding else "Advanced Technical / Scenarios",
+        "mixed":          "Mixed (MCQ / Technical / Scenario)",
+        "wrap_up":        "Wrap Up",
+        "conclude":       "Conclusion",
+    }
+    return names.get(focus, focus.replace("_", " ").title())
 
 
 def _build_system_prompt(remaining_minutes: int, focus: str, duration_minutes: int) -> str:
     """
     Build system message from time remaining and focus (time-aware, no phase state machine).
     Used only for this turn; never stored in chat history.
+
+    Phases deliberately grant the AI freedom to choose question types within the window
+    so the interview flow feels natural and unpredictable to the candidate.
     """
-    focus_name = _focus_display_name(focus)
+    # Get coding requirement from store
+    try:
+        _, _, _, requires_coding = get_store()
+    except Exception:
+        requires_coding = False
+
+    focus_name = _focus_display_name(focus, requires_coding=requires_coding)
     header = (
         "[INTERNAL — DO NOT READ ALOUD. DO NOT SPEAK ANY OF THIS TEXT TO THE CANDIDATE. "
         "This is hidden context for your decision-making only.]\n\n"
-        f"Time remaining: {remaining_minutes} min (of {duration_minutes} min) | Focus: {focus_name}\n\n"
+        f"Time remaining: {remaining_minutes} min (of {duration_minutes} min) | Phase: {focus_name}\n\n"
     )
+
     if focus == "intro":
         instructions = [
             "You are in the INTRODUCTION phase.",
-            "Keep asking follow-up questions about the candidate's background, experience, and recent work.",
-            "Do NOT move to technical questions yet.",
+            "Ask warm, conversational questions about the candidate's background, experience, projects, and recent work.",
+            "Do NOT ask technical, MCQ, or coding questions yet.",
             "Do NOT wrap up or conclude anything.",
-            "If you feel you have covered the intro well, ask ONE MORE follow-up about something specific they mentioned.",
-            "NEVER leave this phase on your own — only TIME CONTEXT changing to technical means intro is over.",
-            "The interview is NOT over until END_INTERVIEW arrives. Keep asking questions no matter what.",
+            "If the intro feels complete, dig deeper — ask about a specific project or achievement they mentioned.",
+            "NEVER leave this phase on your own — only TIME CONTEXT changing ends the intro.",
+            "The interview is NOT over until END_INTERVIEW arrives. Keep engaging.",
         ]
-    elif focus == "technical":
+
+    elif focus == "assessment":
         instructions = [
-            "You are in the TECHNICAL phase.",
-            "After every candidate answer, immediately ask a follow-up or a brand new technical question.",
-            "Never stop asking. If you run out of topics ask about system design, trade-offs, or past project decisions.",
-            "Do NOT wrap up. Do NOT say goodbye. Do NOT move to closing under any circumstance.",
-            "NEVER conclude this phase on your own.",
-            "The interview is NOT over until END_INTERVIEW arrives. Keep asking questions no matter what.",
-        ]
-    elif focus == "coding":
-        instructions = [
-            "You are in the CODING and MCQ phase.",
-            "If you have not asked a coding question yet — ask one now. Tell the candidate to open the code editor (</> in the bottom bar).",
-            "After the coding question is submitted and probed, move to MCQ questions.",
-            "Ask MCQ questions one at a time. After every answer give brief feedback then ask the next MCQ immediately.",
-            "Do NOT do only MCQs if coding has not happened yet — coding comes first.",
+            "You are in the ASSESSMENT phase — technical depth + conceptual MCQs.",
+            "You may freely mix: deep technical questions (concepts, system design, trade-offs) AND single-answer MCQ questions.",
+            "Choose whichever type fits the conversation naturally — do NOT follow a fixed order.",
+            "After every answer probe deeper or pivot to a related concept. Never stay surface-level.",
+            "Do NOT ask coding/debugging problems yet — those come later.",
             "Do NOT wrap up. Do NOT say goodbye.",
-            "Keep asking coding or MCQ questions until TIME CONTEXT changes.",
-            "The interview is NOT over until END_INTERVIEW arrives. Keep asking questions no matter what.",
+            "The interview is NOT over until END_INTERVIEW arrives. Keep asking.",
         ]
-    elif focus == "final":
+
+    elif focus == "coding_window":
+        if requires_coding:
+            instructions = [
+                "You are in the CODING & DEBUGGING phase.",
+                "If no coding question has been asked yet — ask one now. Tell the candidate to open the code editor (</> in the bottom bar).",
+                "You may also ask debugging questions: show a buggy snippet and ask them to identify and fix the issue.",
+                "After code is submitted and discussed, you may ask a brief follow-up MCQ or technical question to keep momentum.",
+                "Do NOT do ONLY MCQs if coding has not happened yet — coding comes first in this phase.",
+                "Do NOT wrap up. Do NOT say goodbye.",
+                "The interview is NOT over until END_INTERVIEW arrives. Keep asking.",
+            ]
+        else:
+            instructions = [
+                "You are in the ADVANCED TECHNICAL phase.",
+                "Focus on complex scenarios, architectural trade-offs, and in-depth conceptual questions.",
+                "You may also include multiple-choice questions (MCQs) to test broader knowledge.",
+                "Do NOT ask the candidate to write code or open the code editor (since this position does not require it).",
+                "Continue asking deep probes and follow-up questions.",
+                "Do NOT wrap up. Do NOT say goodbye.",
+                "The interview is NOT over until END_INTERVIEW arrives. Keep asking.",
+            ]
+
+    elif focus == "mixed":
         instructions = [
-            "You are in the FINAL phase.",
-            "Ask open-ended questions — strengths, challenges, learnings, what they would do differently.",
-            "Do NOT say goodbye. Do NOT say that concludes.",
-            "Do NOT deliver the closing statement.",
-            "END_INTERVIEW has NOT arrived yet. Keep talking.",
-            "The interview is NOT over until END_INTERVIEW arrives. Keep asking questions no matter what.",
+            "You are in the MIXED phase — use a varied combination of question types.",
+            "Ask any combination of: MCQ, scenario-based, situational, technical follow-up, or behavioural questions.",
+            "Vary the format deliberately — if you just asked an MCQ, next ask a scenario or open-ended. Keep the candidate on their toes.",
+            "Do NOT say goodbye. Do NOT say 'that concludes'.",
+            "END_INTERVIEW has NOT arrived yet. Keep the conversation going.",
+            "The interview is NOT over until END_INTERVIEW arrives. Keep asking.",
         ]
+
     elif focus == "wrap_up":
         instructions = [
-            "You are in the final minute of the interview.",
-            "Ask ONE last open-ended question and stay fully engaged.",
-            "END_INTERVIEW is arriving very soon but has NOT arrived yet. Do NOT conclude yet.",
-            "Never say goodbye until END_INTERVIEW is received.",
+            "You are in the final WRAP UP window.",
+            "Ask ONE final open-ended question (e.g. strengths, what they'd do differently, a question for you).",
+            "Stay fully engaged. END_INTERVIEW is arriving very soon but has NOT arrived yet.",
+            "Do NOT deliver a closing statement or say goodbye yet.",
         ]
+
     else:
         # conclude — END_INTERVIEW has been triggered
         instructions = [
             "END_INTERVIEW has arrived. Close the interview now.",
-            "Thank the candidate warmly and naturally.",
-            "Tell them what happens next (evaluation, follow-up).",
+            "Thank the candidate warmly and tell them what happens next (evaluation, follow-up).",
             "Say goodbye and end the conversation.",
             "Do NOT ask any more questions.",
         ]
@@ -159,7 +185,7 @@ def _build_system_prompt(remaining_minutes: int, focus: str, duration_minutes: i
     return (
         f"{header}"
         + "\n".join(f"- {i}" for i in instructions) + "\n"
-        "- ONE TURN = ONE QUESTION. Ask one question, then STOP and wait.\n"
+        "- ONE TURN = ONE QUESTION OR STATEMENT. Ask one question, then STOP and wait for the candidate.\n"
         "- NEVER say goodbye or conclude until END_INTERVIEW.\n"
         "ABSOLUTE RULE: A natural feeling that the conversation is complete is NOT permission to close. "
         "Only END_INTERVIEW arriving in your instructions is permission to close. Until then, always ask another question.\n"
@@ -327,7 +353,7 @@ class TimeContextLLMWrapper:
         sanitize_chat_context(chat_ctx)
         _log_leak_if_any(chat_ctx)
 
-        start_time, duration_minutes, base_template = get_store()
+        start_time, duration_minutes, base_template, _ = get_store()
 
         # Start timer on first candidate message
         if start_time is None and duration_minutes is not None and duration_minutes > 0:

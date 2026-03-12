@@ -33,6 +33,7 @@ async def run_interview_time_loop(
     config: Any,
     slot_start_ist: Optional[datetime] = None,
     scheduled_duration_minutes: Optional[int] = None,
+    requires_coding: bool = False,
 ) -> None:
     """
     Run the main time loop until interview ends or room disconnects.
@@ -65,7 +66,7 @@ async def run_interview_time_loop(
                     try:
                         from services.session_time_store import set_store_duration_only
                         from app.services.history_managed_llm_wrapper import reset_questions_asked  # type: ignore
-                        set_store_duration_only(actual_duration, base_template)
+                        set_store_duration_only(actual_duration, base_template, requires_coding)
                         reset_questions_asked()
                     except Exception as e:
                         logger.warning("Could not set session time store: %s", e)
@@ -89,7 +90,7 @@ async def run_interview_time_loop(
                 try:
                     from services.session_time_store import get_store
                     from agents.session_time import set_session_time
-                    store_start, store_dur, _ = get_store()
+                    store_start, store_dur, _, _ = get_store()
                     if store_start is not None and store_dur is not None:
                         resolved_start_time = store_start
                         # Ensure int (store may have float if it came from DB)
