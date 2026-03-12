@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 _root = Path(__file__).parent.parent
 _project_root = _root.parent
 possible_paths = [
+    _root / "Interview-Backend",
     _root / "Livekit-Backend-agent-backend",
     _root / "backend",
     _project_root / "backend",
