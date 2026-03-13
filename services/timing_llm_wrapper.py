@@ -238,32 +238,42 @@ class TimingContextWrapper:
                                 if hasattr(part, "text") and part.text:
                                     chunk_text += part.text if isinstance(part.text, str) else ""
 
-                # Only sanitize if we see [INTERNAL in this chunk or are already buffering
+                # If we are in passthrough mode, just pass the chunk through (already found and stripped the marker)
                 if self._sanitizer_state.should_passthrough():
-                    # Marker already found in previous chunk — pass through directly
                     if chunk_text:
                         self._total_chars += len(chunk_text)
                     return chunk
 
-                # Check if [INTERNAL detected — only then start buffering
-                if "[INTERNAL" not in self._sanitizer_state.buffer and "[INTERNAL" not in chunk_text:
-                    # Normal response — pass through directly, no buffering needed
-                    if chunk_text:
-                        self._total_chars += len(chunk_text)
-                    self._sanitizer_state.passthrough = True  # skip buffering for rest of stream
-                    return chunk
-
-                # [INTERNAL detected — buffer and wait for closing marker
+                # Always add to buffer and check for the [END INTERNAL CONTEXT] marker.
+                # The sanitizer handles skipping content until the marker is found.
                 self._sanitizer_state.add(chunk_text)
                 after = self._sanitizer_state.take_after_marker()
-                if after:
-                    # Marker found — return only content after it, enable passthrough
-                    self._total_chars += len(after)
-                    return _make_chunk_with_content(after, chunk)
+                
+                if self._sanitizer_state.should_passthrough():
+                    # Marker was found in this chunk or buffer reached max size.
+                    # 'after' contains the sanitized content to emit.
+                    if after:
+                        self._total_chars += len(after)
+                        return _make_chunk_with_content(after, chunk)
+                    # If marker was found but 'after' is empty, continue to next chunk
+                    continue
 
-                # Still buffering [INTERNAL] block — do NOT return empty chunk to TTS.
-                # Loop back to fetch the next stream chunk instead, so TTS never sees
-                # silence mid-question and prematurely ends the utterance.
+                # We haven't found the marker yet. 
+                # Check if we should even be buffering (does it start with [INTERNAL, [THOUGHT, or [RESPONSE?)
+                strip_markers = ("[INTERNAL", "[THOUGHT", "[RESPONSE")
+                if not any(self._sanitizer_state.buffer.strip().startswith(m) for m in strip_markers):
+                    # This doesn't look like it starts with an internal block.
+                    # We'll allow passthrough for this chunk but keep checking subsequent ones
+                    # just in case an [INTERNAL] block appears later (though unlikely in current architecture).
+                    # Actually, for safety, let's just emit the chunk but NOT set passthrough=True.
+                    if chunk_text:
+                        self._total_chars += len(chunk_text)
+                        
+                    # We clear the buffer so we don't re-emit the same text next time
+                    self._sanitizer_state.buffer = ""
+                    return chunk
+                
+                # We are definitely buffering an [INTERNAL] block. Continue to next chunk.
                 continue
 
             except StopAsyncIteration:

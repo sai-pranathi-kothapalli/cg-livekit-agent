@@ -22,8 +22,6 @@ INTERNAL_LINE_PATTERNS = re.compile(
     r"Time\s+remaining\s*\d+|"
     r"Focus\s*:\s*\w+|"
     r"Focus\s+\w+|"
-    r"\[INTERNAL\s*[^\]]*|"
-    r"\[END\s+INTERNAL\s+CONTEXT[^\]]*\]|"
     r"END\s+INTERNAL\s+CONTEXT",
     re.IGNORECASE,
 )
@@ -45,17 +43,36 @@ EARLY_GOODBYE_PHRASES = [
 
 def remove_internal_blocks(text: str) -> str:
     """
-    Remove all [INTERNAL...]...[END INTERNAL CONTEXT...] blocks (hardened regex).
+    Remove all [INTERNAL...], [THOUGHT...], [RESPONSE...] ... [END INTERNAL CONTEXT...] blocks.
     Prevents prompt leakage: internal notes must never be in user-visible or model-visible dialogue.
     """
     if not text or not isinstance(text, str):
         return text
-    return re.sub(
-        r"\[INTERNAL.*?END\s+INTERNAL\s+CONTEXT[^\]]*\]",
+    
+    # 1. Remove hardened blocks with end markers
+    out = re.sub(
+        r"\[(INTERNAL|THOUGHT|RESPONSE).*?END\s+INTERNAL\s+CONTEXT[^\]]*\]",
         "",
         text,
         flags=re.DOTALL | re.IGNORECASE,
     )
+    
+    # 2. Remove [THOUGHT] or [INTERNAL] prefix and everything until next newline or [RESPONSE]
+    # This catches case where model forgets [END INTERNAL CONTEXT] but starts the response.
+    out = re.sub(
+        r"\[(THOUGHT|INTERNAL)[^\]]*\]:?.*?(?=\[RESPONSE\]|\n|$)",
+        "",
+        out,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    
+    # 3. Strip prefix [RESPONSE]: marker but KEEP the content after it
+    out = re.sub(r"\[RESPONSE[^\]]*\]:?\s*", "", out, flags=re.IGNORECASE)
+    
+    # 4. Remove any remaining [END INTERNAL CONTEXT] markers
+    out = re.sub(r"\[END\s+INTERNAL\s+CONTEXT[^\]]*\]", "", out, flags=re.IGNORECASE)
+    
+    return out
 
 
 def sanitize_agent_response(text: str) -> str:
@@ -69,10 +86,13 @@ def sanitize_agent_response(text: str) -> str:
     out = remove_internal_blocks(text)
     # 2) Strip block from start until [END INTERNAL CONTEXT ... ] (if pattern differs)
     out = STRIP_UNTIL_MARKER.sub("", out)
-    # 2) Drop any remaining lines that look like internal context
+    # 2) Drop any remaining lines that look like internal context or are empty
     lines = out.split("\n")
     kept = []
     for line in lines:
+        stripped_line = line.strip()
+        if not stripped_line:
+            continue
         if INTERNAL_LINE_PATTERNS.search(line):
             continue
         kept.append(line)
