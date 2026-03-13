@@ -40,13 +40,21 @@ def substitute_context_placeholders(context: str, candidate_profile: Optional[di
         if key:
             context = context.replace("{" + key + "}", value)
 
-    # Replace common placeholders that might be missing from candidate_profile with empty string
+    # Replace common placeholders that might be missing from candidate_profile with safe fallbacks
     # This prevents the LLM from seeing literal {full_name} etc. and echoing it
-    common_placeholders = ["full_name", "email", "graduation_degree", "skills", "name"]
-    for placeholder in common_placeholders:
+    # We use "Candidate" or "there" for name, and just empty/generic for others
+    fallbacks = {
+        "full_name": "Candidate",
+        "name": "Candidate",
+        "email": "provided email address",
+        "graduation_degree": "recent degree",
+        "skills": "your technical background"
+    }
+    
+    for placeholder, fallback_val in fallbacks.items():
         if "{" + placeholder + "}" in context:
             # Only replace if not already substituted (not in subs)
             if placeholder not in subs:
-                context = context.replace("{" + placeholder + "}", "")
+                context = context.replace("{" + placeholder + "}", fallback_val)
 
     return context
