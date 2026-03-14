@@ -125,7 +125,8 @@ class FallbackChunkedStream:
             logger.info("🔊 [TTS] Using PRIMARY TTS (self-hosted) for this synthesis")
             self._active_stream = self._primary_tts.synthesize(self._text, conn_options=self._conn_options)
         
-        return await self._active_stream.__aenter__()
+        await self._active_stream.__aenter__()
+        return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._active_stream:
@@ -213,9 +214,9 @@ class FallbackSynthesizeStream:
             logger.info("🔊 [TTS] Using PRIMARY TTS (self-hosted) for streaming")
             self._active_stream = self._primary_tts.stream(conn_options=self._conn_options)
         
-        result = await self._active_stream.__aenter__()
+        await self._active_stream.__aenter__()
         self._initialized = True
-        return result
+        return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._active_stream:

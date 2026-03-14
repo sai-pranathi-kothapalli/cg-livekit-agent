@@ -92,7 +92,8 @@ class FallbackLLMChat:
             logger.info("🔵 [LLM] Using PRIMARY LLM (Gemini) for this turn")
             self._active_chat = self._primary_llm.chat(*self._args, **self._kwargs)
         
-        return await self._active_chat.__aenter__()
+        await self._active_chat.__aenter__()
+        return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._active_chat:
