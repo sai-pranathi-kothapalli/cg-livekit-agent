@@ -141,3 +141,8 @@ bcrypt==5.0.0
 
 # MongoDB (for evaluation + booking status when worker uses backend app.db / app.services)
 pymongo>=4.0.0
+
+# Testing
+pytest==9.0.2
+pytest-asyncio==1.3.0
+pytest-cov==7.0.0
