@@ -219,8 +219,9 @@ def sanitize_chat_context(chat_ctx) -> None:
             else:
                 text = str(content)
             
-            # Remove [INTERNAL] blocks but keep the rest of the content
-            cleaned = remove_internal_blocks(text)
+            # Remove [INTERNAL] blocks and other context artifacts
+            from services.output_sanitizer import sanitize_agent_response
+            cleaned = sanitize_agent_response(text)
             
             # Only update if content actually changed
             if cleaned == text:
@@ -230,7 +231,6 @@ def sanitize_chat_context(chat_ctx) -> None:
                 # Preserve list shape for LiveKit ChatMessage (content is list[ChatContent])
                 if isinstance(getattr(m, "content", None), list):
                     # If cleaned is empty after removing internal blocks, keep at least empty string
-                    # This ensures the message structure is preserved for to_provider_format()
                     setattr(m, "content", [cleaned] if cleaned else [""])
                 else:
                     setattr(m, "content", cleaned if cleaned else "")
