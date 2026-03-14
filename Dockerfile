@@ -28,19 +28,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
-# Copy only requirements first for better caching
-COPY agent/requirements.txt /app/agent/requirements.txt
+# If building from the agent-only repo, requirements.txt is at the root
+COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r /app/agent/requirements.txt
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy the agent and backend code
-# The agent depends on 'app.*' modules from the backend
-COPY agent /app/agent
-COPY backend /app/backend
+# Copy all agent code to the container
+COPY . .
 
-# Set the working directory to the agent folder
-WORKDIR /app/agent
+# IMPORTANT: The agent depends on the 'backend' folder for 'app.*' modules.
+# Ensure the backend folder is copied or mounted.
+# If you are building from the split repo, you must ensure a 'backend' 
+# folder exists in your build context.
+# COPY backend /app/backend  <-- Uncomment if you copy/clone backend here
 
 # Run the agent
-# The mode 'dev' is used to connect to LiveKit Cloud
 CMD ["python", "agent.py", "dev"]
