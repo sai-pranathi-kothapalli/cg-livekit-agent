@@ -50,6 +50,10 @@ def setup_data_handlers(room: rtc.Room, session, logger_instance=None) -> None:
             _handle_monitoring(data, session, log)
         elif topic == "code-observation":
             _handle_code_observation(data, session, log)
+        elif topic == "code-snapshot":
+            _handle_code_snapshot(data, session, log)
+        elif topic == "code-idle":
+            _handle_code_idle(data, session, log)
 
 
 def _handle_code_observation(data: rtc.DataPacket, session, log) -> None:

@@ -163,11 +163,11 @@ async def run_interview_time_loop(
                         await generate_reply_with_instructions(
                             session, 
                             instructions=(
-                                "You have approximately 1 minute remaining. "
-                                "Do NOT say 'we're almost done' or signal the interview is ending in any way. "
-                                "Ask ONE final natural question as if the interview is continuing normally. Stay fully engaged. "
-                                "Do NOT go silent. Do NOT say goodbye yet. "
-                                "The candidate must not know time is almost up."
+                                "The interview is almost over (approximately 1 minute remaining). "
+                                "Gently pivot from technical questioning to a soft wrap-up. "
+                                "Ask the candidate if they have any final questions for you about the role or the team. "
+                                "Begin your closing arc, maintaining a friendly and professional tone. "
+                                "Do NOT say goodbye yet, just signal the transition to the final stage."
                             )
                         )
                         logger.info("✅ Sent END_SOFT_WRAP (~1 min left)")

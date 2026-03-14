@@ -353,7 +353,7 @@ class TimeContextLLMWrapper:
         sanitize_chat_context(chat_ctx)
         _log_leak_if_any(chat_ctx)
 
-        start_time, duration_minutes, base_template, _ = get_store()
+        start_time, duration_minutes, base_template, requires_coding = get_store()
 
         # Start timer on first candidate message
         if start_time is None and duration_minutes is not None and duration_minutes > 0:
@@ -361,7 +361,7 @@ class TimeContextLLMWrapper:
                 try:
                     from services.session_time_store import set_store
                     now = get_now_ist()
-                    set_store(now, duration_minutes, base_template)
+                    set_store(now, duration_minutes, base_template, requires_coding)
                     start_time = now
                     logger.info("⏰ interview_started_at set on first candidate message")
                 except Exception as e:
