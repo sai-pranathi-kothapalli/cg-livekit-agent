@@ -348,7 +348,12 @@ class PluginService:
             logger.info("   [OK] LiveAvatar (HeyGen) started")
             return avatar_session
         except Exception as e:
-            logger.warning(f"   [WARN] LiveAvatar failed - will use static avatar fallback: {e}")
+            error_str = str(e)
+            if "429" in error_str or "quota" in error_str.lower():
+                logger.error(f"   [CRITICAL] LiveAvatar Quota Exceeded (HeyGen API): {e}")
+                print(f"   [CRITICAL] LiveAvatar Quota Exceeded: {e}", flush=True)
+            else:
+                logger.warning(f"   [WARN] LiveAvatar failed - will use static avatar fallback: {e}")
             return None
     
 
