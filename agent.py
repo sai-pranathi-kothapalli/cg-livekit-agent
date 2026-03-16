@@ -32,6 +32,10 @@ from dotenv import load_dotenv
 _root = Path(__file__).parent.parent
 _project_root = _root.parent
 possible_paths = [
+    Path("/app/backend"),
+    Path("/Interview-Backend"),
+    Path("/Livekit-Backend-agent-backend"),
+    Path("/backend"),
     _root / "Interview-Backend",
     _root / "Livekit-Backend-agent-backend",
     _root / "backend",
@@ -258,6 +262,14 @@ if __name__ == "__main__":
     
     # Set a basic level so logs work before LiveKit configures
     logger.setLevel(logging.INFO)
+
+    # CRITICAL: Suppress noisy debug logs from internal libraries that spam terminal
+    # This prevents hitting LiveKit telemetry quotas (error 429)
+    logging.getLogger("hpack").setLevel(logging.INFO)
+    logging.getLogger("httpcore").setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.INFO)
+    logging.getLogger("google.ai.generativelanguage").setLevel(logging.INFO)
+    logging.getLogger("openai").setLevel(logging.INFO)
     
     agent_name = config.livekit.agent_name
     
