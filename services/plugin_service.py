@@ -117,14 +117,34 @@ class PluginService:
     
     def _initialize_stt(self):
         """
-        Initialize STT plugin (self-hosted only).
+        Initialize STT plugin (Self-hosted or ElevenLabs).
         
         Returns:
             Configured STT plugin
         """
-        logger.info("[DEBUG] STT CONFIGURATION: Self-hosted only")
+        # 1. Try ElevenLabs STT
+        if self.config.elevenlabs.stt_enabled and ELEVENLABS_AVAILABLE:
+            logger.info("[DEBUG] STT CONFIGURATION: ElevenLabs")
+            if not self.config.elevenlabs.api_key:
+                raise ConfigurationError("ELEVENLABS_TTS_API_KEY is missing but ElevenLabs STT is enabled.")
+                
+            logger.info(f"   Model: {self.config.elevenlabs.stt_model}")
+            stt_plugin = elevenlabs.STT(
+                api_key=self.config.elevenlabs.api_key,
+                model_id=self.config.elevenlabs.stt_model
+            )
+            logger.info("   [OK] ElevenLabs STT initialized")
+            return stt_plugin
+            
+        elif self.config.elevenlabs.stt_enabled and not ELEVENLABS_AVAILABLE:
+            raise ConfigurationError("ElevenLabs plugin not available but enabled. Install with: pip install livekit-plugins-elevenlabs")
+
+        # 2. Try Self-hosted STT
+        logger.info("[DEBUG] STT CONFIGURATION: Self-hosted")
         if not self.config.openai.stt_enabled:
-            raise ConfigurationError("Self-hosted STT is required. Set SELF_HOSTED_STT_ENABLED=true.")
+            raise ConfigurationError(
+                "No STT configured. Enable exactly one: SELF_HOSTED_STT_ENABLED=true OR ELEVENLABS_STT_ENABLED=true"
+            )
         logger.info(f"   Base URL: {self.config.openai.stt_base_url}")
         logger.info(f"   Model: {self.config.openai.stt_model}")
         stt_plugin = openai.STT(

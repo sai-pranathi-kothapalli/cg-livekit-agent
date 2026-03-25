@@ -595,6 +595,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     audio_input=room_io.AudioInputOptions(
                         noise_cancellation=noise_cancellation.BVC(),
                     ),
+                    close_on_disconnect=False,
                 ),
             )
             logger.info("[OK] Step 7: Success - Session started with BVC noise cancellation!")
@@ -644,8 +645,35 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.warning(f"[WARN] LiveAvatar initialization error (using static avatar): {e}")
             print(f"[WARN] LiveAvatar failed - using static avatar fallback", flush=True)
         
+        # Step 7c: Load history and determine if we should skip greeting
+        history_loaded = False
+        if booking_token and transcript_storage:
+            try:
+                logger.info(f"[HISTORY] Checking for existing transcript for {booking_token}...")
+                past_messages = transcript_storage.get_transcript(booking_token)
+                if past_messages and len(past_messages) > 0:
+                    logger.info(f"[HISTORY] Found {len(past_messages)} past messages. Loading into history manager...")
+                    # Dive into the wrapped chat to find the history manager
+                    # plugins["llm"].chat is TimingLLMWrapper
+                    # timing_wrapper._original_chat is HistoryManagedLLMWrapper
+                    llm_chat = plugins["llm"].chat
+                    history_wrapper = getattr(llm_chat, "_original_chat", None)
+                    if history_wrapper:
+                        history_manager = getattr(history_wrapper, "_history_manager", None)
+                        if history_manager:
+                            # Sort by index to ensure order
+                            sorted_messages = sorted(past_messages, key=lambda x: x.get('index', 0) if x.get('index') is not None else 0)
+                            for msg in sorted_messages:
+                                history_manager.add_message(msg['role'], msg['content'])
+                            history_loaded = True
+                            logger.info(f"[HISTORY] Successfully loaded {len(sorted_messages)} messages.")
+                            print(f"[HISTORY] Loaded {len(sorted_messages)} past messages - resuming interview", flush=True)
+            except Exception as e:
+                logger.warning(f"[HISTORY] Failed to load past history: {e}")
+                print(f"[HISTORY] Warning: Could not load past history ({e})", flush=True)
+
         # Step 7b: Generate initial greeting (AFTER session.start - generate_reply requires session to be running)
-        if ctx.room.remote_participants:
+        if ctx.room.remote_participants and not history_loaded:
             logger.info("[GREETING] Generating initial greeting (session is now running)...")
             print("[GREETING] Generating initial greeting...", flush=True)
             try:
@@ -683,6 +711,9 @@ async def entrypoint(ctx: JobContext) -> None:
                 set_skip_transcript(False)
                 logger.error(f"[GREETING] Failed - {e}", exc_info=True)
                 print(f"[GREETING] Failed - {e}", flush=True)
+        elif history_loaded:
+            logger.info("[GREETING] Skipped greeting - resumed conversation history.")
+            print("[GREETING] Resuming conversation - skipping initial greeting.", flush=True)
         else:
             logger.info("[GREETING] Skipped - no participant in room")
             print("[GREETING] Skipped - no participant in room", flush=True)
