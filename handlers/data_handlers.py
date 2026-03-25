@@ -220,26 +220,23 @@ def _handle_monitoring(data: rtc.DataPacket, session, log) -> None:
 
 
 def _handle_code_snapshot(data: rtc.DataPacket, session, log) -> None:
-    """Handle code snapshot (every 15s while typing).
-
-    NOTE: We do NOT trigger a generate_reply on every snapshot — that would
-    interrupt the candidate mid-coding every 15 seconds. Instead, we just log
-    the code progress so the agent can reference it if it needs to speak.
-    The agent will naturally engage when the candidate pauses or submits.
-    """
+    """Handle code snapshot (every 15s while typing)."""
     try:
         payload = json.loads(data.data)
         code_snippet = payload.get('code', '')
         question = payload.get('question', 'N/A')
         language = payload.get('language', 'N/A')
-        log.info(
-            f"📸 [CODE SNAPSHOT] Candidate is coding | lang={language} | "
-            f"lines={len(code_snippet.splitlines())} | question={str(question)}"
+        
+        log.debug(
+            f"📸 [CODE SNAPSHOT] Progress update | lang={language} | "
+            f"lines={len(code_snippet.splitlines())}"
         )
-        # No generate_reply here — let the candidate code without interruption.
-        # The agent will speak only when the candidate pauses (code-idle) or submits (code-submission).
+        
+        # Persist to state and backend
+        interview_state.update_latest_code(code_snippet)
+        
     except Exception as e:
-        log.error(f"Error handling code-snapshot data: {e}", exc_info=True)
+        log.error(f"Error handling code-snapshot data: {e}")
 
 
 def _handle_code_idle(data: rtc.DataPacket, session, log) -> None:

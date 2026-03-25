@@ -89,7 +89,6 @@ async def run_interview_time_loop(
             if candidate_joined and resolved_start_time is None:
                 try:
                     from services.session_time_store import get_store
-                    from agents.session_time import set_session_time
                     store_start, store_dur, _, _ = get_store()
                     if store_start is not None and store_dur is not None:
                         resolved_start_time = store_start
@@ -98,7 +97,6 @@ async def run_interview_time_loop(
                         # Update base_template based on resolved duration
                         base_template = "45" if resolved_duration_minutes >= 43 else "30"
                         resolved_end_time = store_start + timedelta(minutes=resolved_duration_minutes)
-                        set_session_time(resolved_start_time, resolved_duration_minutes)
                         logger.info(
                             "⏰ Interview started at first message: start=%s, duration=%s min, end=%s",
                             resolved_start_time,

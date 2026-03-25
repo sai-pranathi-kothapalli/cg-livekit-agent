@@ -140,12 +140,17 @@ async def entrypoint(ctx: JobContext) -> None:
         
         # Also use regular logger for structured logging
         logger.info("=" * 60)
-        logger.info("[PROD] AGENT JOB DISPATCHED")
-        logger.info(f"[INFO] JOB DETAILS:")
-        logger.info(f"   Job ID: {ctx.job.id}")
-        logger.info(f"   Room Name: {ctx.room.name}")
-        logger.info(f"   Agent Name: {config.livekit.agent_name}")
-        logger.info("=" * 60)
+        
+        # Step 0.5: Initialize Interview State with token
+        if booking_token:
+            try:
+                from services import interview_state
+                interview_state.initialize_from_db(booking_token, {})
+                logger.info(f"   [OK] Booking token identified: {booking_token}")
+                logger.info("[OK] Interview state initialized with booking token")
+                print(f"   [OK] Booking token identified", flush=True)
+            except Exception as e:
+                logger.warning(f"Failed to initialize interview state token: {e}")
         
         # Step 1: Connect to room
         logger.info("📡 CONNECTION PROCESS: Step 1 - Connecting to room...")
@@ -299,6 +304,21 @@ async def entrypoint(ctx: JobContext) -> None:
         try:
             from services.transcript_storage_wrapper import get_transcript_storage_service  # type: ignore
             transcript_storage = get_transcript_storage_service()
+            
+            # Step 4.5: Load existing interview state from DB if it exists
+            if booking_token:
+                try:
+                    from app.services.evaluation_service import EvaluationService
+                    eval_service = EvaluationService(config)
+                    evaluation = eval_service.get_evaluation(booking_token)
+                    if evaluation and evaluation.get("interview_state"):
+                        from services import interview_state
+                        db_state = evaluation.get("interview_state")
+                        interview_state.initialize_from_db(booking_token, db_state)
+                        logger.info(f"[OK] Loaded existing interview state from DB: {len(db_state.get('code_submissions', []))} submissions found")
+                        print(f"[OK] Restored past session state from database", flush=True)
+                except Exception as e:
+                    logger.warning(f"Failed to load existing interview state: {e}")
         except Exception as e:
             logger.warning(f"Could not get transcript storage service: {e}")
         
