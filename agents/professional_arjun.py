@@ -41,6 +41,7 @@ class ProfessionalArjun(Agent):
             duration_minutes: Interview duration in minutes (default 30). Agent adapts behavior based on this.
         """
         self.duration_minutes = duration_minutes
+        self.latest_code_version = 0
         instructions = self._build_instructions(candidate_profile, base_instructions)
         
         super().__init__(
@@ -109,6 +110,11 @@ class ProfessionalArjun(Agent):
         """Rough token estimate: ~3 chars per token."""
         return 0 if not text else len(text) // 3
     
+    def update_code_version(self, version: int):
+        """Update the latest code version received from the frontend."""
+        if version > self.latest_code_version:
+            self.latest_code_version = version
+            logger.debug(f"Code version updated to {version}")    
 
     def _build_instructions(
         self,
