@@ -63,6 +63,7 @@ async def test_plugin_service_initialize_success(mock_config):
 def test_plugin_service_initialize_stt_disabled(mock_config):
     """Verify error if STT is disabled."""
     mock_config.openai.stt_enabled = False
+    mock_config.elevenlabs.stt_enabled = False
     service = PluginService(mock_config)
     
     with pytest.raises(ConfigurationError, match="No STT configured"):
