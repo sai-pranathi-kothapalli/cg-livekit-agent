@@ -65,7 +65,7 @@ def test_plugin_service_initialize_stt_disabled(mock_config):
     mock_config.openai.stt_enabled = False
     service = PluginService(mock_config)
     
-    with pytest.raises(ConfigurationError, match="Self-hosted STT is required"):
+    with pytest.raises(ConfigurationError, match="No STT configured"):
         service._initialize_stt()
 
 def test_plugin_service_initialize_tts_elevenlabs(mock_config):

@@ -112,7 +112,7 @@ async def test_handle_code_snapshot(mock_room):
     })
     
     mock_room._handlers["data_received"](event)
-    mock_log.info.assert_called()
+    mock_log.debug.assert_called()
 
 @pytest.mark.asyncio
 async def test_handle_code_idle(mock_room):
