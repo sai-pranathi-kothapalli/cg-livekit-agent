@@ -160,35 +160,23 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.info("[OK] Step 1: Success - Connected to room!")
             print("[OK] Step 1: Success - Connected to room!", flush=True)
 
-            # [GUARD] Check for existing agent participant to ensure idempotency
-            # CRITICAL: Wait briefly for participant sync to prevent race conditions
-            # Use deterministic job_id tie-break to prevent mutual termination when
-            # duplicate jobs connect simultaneously - only the agent with the
-            # smallest job_id stays.
-            await asyncio.sleep(0.5)  # Brief delay to allow participant sync
-
-            # Build list of ALL agent identities in room (including ourselves)
-            # Identity format: agent-{job_id}
-            all_agent_identities = []
-            if ctx.room.local_participant:
-                all_agent_identities.append(ctx.room.local_participant.identity)
-            for p in ctx.room.remote_participants.values():
-                if p.identity.startswith("agent-"):
-                    all_agent_identities.append(p.identity)
-
-            # Extract job_ids (strip "agent-" prefix)
-            all_job_ids = [ident.replace("agent-", "", 1) for ident in all_agent_identities]
-            my_job_id = ctx.job.id
-
-            # Deterministic tie-break: only the agent with the SMALLEST job_id stays
-            if len(all_job_ids) > 1 and min(all_job_ids) != my_job_id:
+            # Safety net: if somehow another agent is already here, exit immediately
+            # This should never happen with the pre-acceptance checks, but just in case
+            from agent import release_room
+            await asyncio.sleep(1.0)  # Wait for participant list to fully propagate
+            agent_count = sum(
+                1 for p in ctx.room.remote_participants.values()
+                if p.identity and p.identity.startswith("agent-")
+            )
+            if agent_count > 0:
                 logger.critical(
-                    f"🤖 [IDEMPOTENCY] Other agent(s) present. My job_id={my_job_id}, min={min(all_job_ids)}. Self-terminating."
+                    f"[SAFETY NET] Another agent detected in room after connecting. "
+                    f"This should not happen — pre-acceptance checks may have failed. "
+                    f"Self-terminating to prevent duplicate."
                 )
-                print(f"🤖 [IDEMPOTENCY] Other agent(s) present. Self-terminating (not lowest job_id).", flush=True)
+                print(f"[SAFETY NET] Another agent detected. Self-terminating.", flush=True)
+                release_room(room_name)  # Clean up tracking
                 return
-            elif len(all_job_ids) > 1:
-                logger.info(f"🤖 [IDEMPOTENCY] Multiple agents detected. We have lowest job_id ({my_job_id}) - staying.")
         except Exception as e:
             error_msg = f"[ERR] Step 1: Failed to connect to room - {e}"
             logger.error(error_msg, exc_info=True)
@@ -850,5 +838,11 @@ async def entrypoint(ctx: JobContext) -> None:
         sys.stderr.flush()
         raise AgentError(f"Agent entrypoint failed: {str(e)}", "my-interviewer")
     finally:
-        # Cleanup tasks or state if needed
-        pass
+        # ALWAYS release the room, even if the agent crashes
+        try:
+            from agent import release_room
+            if room_name and room_name != "unknown":
+                release_room(room_name)
+                logger.info(f"Agent finished and released room {room_name}")
+        except Exception:
+            pass

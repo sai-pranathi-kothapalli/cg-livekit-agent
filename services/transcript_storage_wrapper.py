@@ -32,6 +32,7 @@ if backend_path and str(backend_path) not in sys.path:
 
 from app.utils.logger import get_logger  # type: ignore
 from app.config import get_config  # type: ignore
+from app.utils.sanitize import sanitize_string  # type: ignore
 
 logger = get_logger(__name__)
 
@@ -141,6 +142,11 @@ class TranscriptStorageWrapper:
                 text = sanitize_agent_response(text)
             except Exception:
                 pass
+        
+        # General sanitization for both roles (User & Assistant)
+        if text:
+            text = sanitize_string(text, max_length=5000, strip_html=True)
+            
         if not text and transcript_type == "agentTranscript":
             return
         # Forward to original service (for frontend)

@@ -79,8 +79,32 @@ from app.config import get_config  # type: ignore
 
 # Don't create logger here - it will be created AFTER logging is configured
 # logger = get_logger(__name__)  # MOVED BELOW
-# Track active rooms removed - relying on entrypoint idempotency guard
 
+import asyncio
+from livekit import api as livekit_api
+import os
+
+# Thread-safe set of room names that we've already accepted jobs for
+_accepted_rooms: dict[str, str] = {}  # room_name -> job_id
+_room_lock = asyncio.Lock()
+
+def release_room(room_name: str) -> None:
+    """Remove a room from the accepted set when the agent disconnects."""
+    import logging
+    logger = logging.getLogger(__name__)
+    if room_name in _accepted_rooms:
+        del _accepted_rooms[room_name]
+        logger.info(f"[ROOM RELEASED] {room_name}. Active rooms: {len(_accepted_rooms)}")
+
+# Initialize LiveKit API client
+try:
+    lk_api = livekit_api.LiveKitAPI(
+        url=os.getenv("LIVEKIT_URL", "http://localhost:7880"),
+        api_key=os.getenv("LIVEKIT_API_KEY", "devkey"),
+        api_secret=os.getenv("LIVEKIT_API_SECRET", "secret"),
+    )
+except Exception:
+    lk_api = None
 
 async def job_request_handler(req: JobRequest) -> None:
     """
@@ -147,12 +171,56 @@ async def job_request_handler(req: JobRequest) -> None:
     # Use CRITICAL level to ensure it shows up
     logger.critical(f"[JOB] Job request received: {job_id}, Room: {room_name}")
     logger.info(f"[JOB] Job request received: {job_id}, Room: {room_name}")
+    
+    # Layer 1: Local tracking
+    async with _room_lock:
+        if room_name in _accepted_rooms:
+            existing_job = _accepted_rooms[room_name]
+            logger.warning(
+                f"[DUPLICATE BLOCKED - LOCAL] Room {room_name} already tracked "
+                f"(job={existing_job}). Rejecting job {job_id}."
+            )
+            print(f"[DUPLICATE BLOCKED - LOCAL] Rejecting duplicate job {job_id} for room {room_name}", flush=True)
+            await req.reject()
+            return
+
+    # Layer 2: Check LiveKit API for existing agent participants
+    if lk_api:
+        try:
+            participants = await lk_api.room.list_participants(
+                livekit_api.ListParticipantsRequest(room=room_name)
+            )
+            agent_participants = [
+                p for p in participants.participants
+                if p.identity and p.identity.startswith("agent-")
+            ]
+
+            if agent_participants:
+                logger.warning(
+                    f"[DUPLICATE BLOCKED - API] Room {room_name} already has agent "
+                    f"participant(s): {[p.identity for p in agent_participants]}. "
+                    f"Rejecting job {job_id}."
+                )
+                print(f"[DUPLICATE BLOCKED - API] Rejecting duplicate job {job_id} for room {room_name}", flush=True)
+                await req.reject()
+                return
+        except Exception as e:
+            logger.warning(
+                f"[API CHECK FAILED] Could not verify room {room_name}: {str(e)}. "
+                f"Proceeding with local tracking only."
+            )
+
+    # No duplicate found — accept the job and track it
+    async with _room_lock:
+        _accepted_rooms[room_name] = job_id
+        logger.info(
+            f"[AGENT ACCEPTED] Room {room_name}, job={job_id}. "
+            f"Active rooms: {len(_accepted_rooms)}"
+        )
+        
     print(f"[JOB] Accepting job: {job_id}", flush=True)
     sys.stdout.flush()
     
-    # Idempotency check removed from here. 
-    # Reliability: entrypoint.py handles checking for existing agents after joining.
-
     try:
         await req.accept()
         accept_msg = f"[OK] Job ACCEPTED: {job_id}"
@@ -160,6 +228,7 @@ async def job_request_handler(req: JobRequest) -> None:
         logger.info(accept_msg)
         print(f"[OK][OK][OK] Job ACCEPTED: {job_id} - Entrypoint will be called!", flush=True)
         print("=" * 60 + "\n", flush=True)
+
         sys.stdout.flush()
     except Exception as e:
         logger.error(f"[ERR] Failed to accept job {job_id}: {e}", exc_info=True)
