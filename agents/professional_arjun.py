@@ -30,7 +30,8 @@ class ProfessionalArjun(Agent):
         self, 
         candidate_profile: Optional[Dict[str, Any]] = None, 
         base_instructions: Optional[str] = None,
-        duration_minutes: int = 30
+        duration_minutes: int = 30,
+        curriculum_topics: Optional[str] = None
     ) -> None:
         """
         Initialize Professional Arjun agent.
@@ -39,10 +40,11 @@ class ProfessionalArjun(Agent):
             candidate_profile: Optional structured dictionary of candidate application data
             base_instructions: Optional override for base system instructions
             duration_minutes: Interview duration in minutes (default 30). Agent adapts behavior based on this.
+            curriculum_topics: Optional topics to restrict the interview to.
         """
         self.duration_minutes = duration_minutes
         self.latest_code_version = 0
-        instructions = self._build_instructions(candidate_profile, base_instructions)
+        instructions = self._build_instructions(candidate_profile, base_instructions, curriculum_topics)
         
         super().__init__(
             instructions=instructions,
@@ -119,7 +121,8 @@ class ProfessionalArjun(Agent):
     def _build_instructions(
         self,
         candidate_profile: Optional[Dict[str, Any]],
-        base_instructions: Optional[str] = None
+        base_instructions: Optional[str] = None,
+        curriculum_topics: Optional[str] = None
     ) -> str:
         """
         Build agent instructions with optional candidate profile context.
@@ -144,6 +147,20 @@ class ProfessionalArjun(Agent):
                 base_instructions_text = base_instructions_text.replace("{" + placeholder + "}", replacement)
         
         core_instructions = self._adapt_instructions_for_duration(base_instructions_text, self.duration_minutes)
+
+        # Append curriculum topics if provided by LMS
+        if curriculum_topics:
+            topic_section = (
+                "\n\n## Interview Topics (Curriculum)\n"
+                "You MUST focus this interview specifically on the following topics. "
+                "Ask questions, probe understanding, and evaluate the candidate "
+                "strictly on these topics:\n\n"
+                f"{curriculum_topics}\n\n"
+                "Do not deviate to unrelated topics. All your questions should be "
+                "within the scope of the above topics. Start with fundamentals "
+                "and progressively increase difficulty within these topics."
+            )
+            core_instructions = core_instructions + topic_section
 
         # Inject current date so the LLM does not assume 2024 (e.g. candidate says "2025 graduate" – do not contradict)
         try:

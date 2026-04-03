@@ -101,6 +101,7 @@ async def entrypoint(ctx: JobContext) -> None:
         # Extract booking token from room name or metadata
         booking_token = None
         room_name = "unknown"
+        curriculum_topics = None
         try:
             room_name = ctx.room.name
             # Try to extract from room name (format: "interview_<token>" or just token)
@@ -109,11 +110,15 @@ async def entrypoint(ctx: JobContext) -> None:
             elif len(room_name) == 32 and room_name.replace("_", "").replace("-", "").isalnum():
                 booking_token = room_name
             # Try room metadata
-            if not booking_token and hasattr(ctx.room, 'metadata') and ctx.room.metadata:
+            if hasattr(ctx.room, 'metadata') and ctx.room.metadata:
                 metadata = json.loads(ctx.room.metadata)
-                booking_token = metadata.get('booking_token') or metadata.get('token')
+                if not booking_token:
+                    booking_token = metadata.get('booking_token') or metadata.get('token')
+                curriculum_topics = metadata.get('curriculum_topics')
+                if curriculum_topics:
+                    logger.info(f"Interview topics from LMS: {curriculum_topics[:100]}...")
         except Exception as e:
-            logger.warning(f"Could not extract booking token: {e}")
+            logger.warning(f"Could not extract room metadata: {e}")
         
         # Log job details with CRITICAL level
         logger.critical(f"[INFO] JOB DETAILS:")
@@ -539,7 +544,8 @@ async def entrypoint(ctx: JobContext) -> None:
             agent = ProfessionalArjun(
                 candidate_profile=candidate_profile,
                 base_instructions=agent_instructions or None,
-                duration_minutes=interview_duration_minutes
+                duration_minutes=interview_duration_minutes,
+                curriculum_topics=curriculum_topics
             )
             logger.info(f"✅ Agent created with duration: {interview_duration_minutes} minutes")
             print(f"✅ Agent created with duration: {interview_duration_minutes} minutes", flush=True)
