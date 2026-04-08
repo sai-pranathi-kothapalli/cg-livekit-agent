@@ -111,86 +111,11 @@ def _build_system_prompt(remaining_minutes: int, focus: str, duration_minutes: i
         f"Time remaining: {remaining_minutes} min (of {duration_minutes} min) | Phase: {focus_name}\n\n"
     )
 
-    if focus == "intro":
-        instructions = [
-            "You are in the INTRODUCTION phase.",
-            "Ask warm, conversational questions about the candidate's background, experience, projects, and recent work.",
-            "Do NOT ask technical, MCQ, or coding questions yet.",
-            "Do NOT wrap up or conclude anything.",
-            "If the intro feels complete, dig deeper — ask about a specific project or achievement they mentioned.",
-            "NEVER leave this phase on your own — only TIME CONTEXT changing ends the intro.",
-            "The interview is NOT over until END_INTERVIEW arrives. Keep engaging.",
-        ]
-
-    elif focus == "assessment":
-        instructions = [
-            "You are in the ASSESSMENT phase — technical depth + conceptual MCQs.",
-            "You may freely mix: deep technical questions (concepts, system design, trade-offs) AND single-answer MCQ questions.",
-            "Choose whichever type fits the conversation naturally — do NOT follow a fixed order.",
-            "After every answer probe deeper or pivot to a related concept. Never stay surface-level.",
-            "Do NOT ask coding/debugging problems yet — those come later.",
-            "Do NOT wrap up. Do NOT say goodbye.",
-            "The interview is NOT over until END_INTERVIEW arrives. Keep asking.",
-        ]
-
-    elif focus == "coding_window":
-        if requires_coding:
-            instructions = [
-                "You are in the CODING & DEBUGGING phase.",
-                "If no coding question has been asked yet — ask one now. Tell the candidate to open the code editor (</> in the bottom bar).",
-                "You may also ask debugging questions: show a buggy snippet and ask them to identify and fix the issue.",
-                "After code is submitted and discussed, you may ask a brief follow-up MCQ or technical question to keep momentum.",
-                "Do NOT do ONLY MCQs if coding has not happened yet — coding comes first in this phase.",
-                "Do NOT wrap up. Do NOT say goodbye.",
-                "The interview is NOT over until END_INTERVIEW arrives. Keep asking.",
-            ]
-        else:
-            instructions = [
-                "You are in the ADVANCED TECHNICAL phase.",
-                "Focus on complex scenarios, architectural trade-offs, and in-depth conceptual questions.",
-                "You may also include multiple-choice questions (MCQs) to test broader knowledge.",
-                "Do NOT ask the candidate to write code or open the code editor (since this position does not require it).",
-                "Continue asking deep probes and follow-up questions.",
-                "Do NOT wrap up. Do NOT say goodbye.",
-                "The interview is NOT over until END_INTERVIEW arrives. Keep asking.",
-            ]
-
-    elif focus == "mixed":
-        instructions = [
-            "You are in the MIXED phase — use a varied combination of question types.",
-            "Ask any combination of: MCQ, scenario-based, situational, technical follow-up, or behavioural questions.",
-            "Vary the format deliberately — if you just asked an MCQ, next ask a scenario or open-ended. Keep the candidate on their toes.",
-            "Do NOT say goodbye. Do NOT say 'that concludes'.",
-            "END_INTERVIEW has NOT arrived yet. Keep the conversation going.",
-            "The interview is NOT over until END_INTERVIEW arrives. Keep asking.",
-        ]
-
-    elif focus == "wrap_up":
-        instructions = [
-            "You are in the final WRAP UP window.",
-            "Ask ONE final open-ended question (e.g. strengths, what they'd do differently, a question for you).",
-            "Stay fully engaged. END_INTERVIEW is arriving very soon but has NOT arrived yet.",
-            "Do NOT deliver a closing statement or say goodbye yet.",
-        ]
-
-    else:
-        # conclude — END_INTERVIEW has been triggered
-        instructions = [
-            "END_INTERVIEW has arrived. Close the interview now.",
-            "Thank the candidate warmly and tell them what happens next (evaluation, follow-up).",
-            "Say goodbye and end the conversation.",
-            "Do NOT ask any more questions.",
-        ]
-
     return (
         f"{header}"
         + "\n".join(f"- {i}" for i in instructions) + "\n"
-        "- ONE TURN = ONE QUESTION OR STATEMENT. Ask one question, then STOP and wait for the candidate.\n"
-        "- NEVER say goodbye or conclude until END_INTERVIEW.\n"
-        "ABSOLUTE RULE: A natural feeling that the conversation is complete is NOT permission to close. "
-        "Only END_INTERVIEW arriving in your instructions is permission to close. Until then, always ask another question.\n"
-        "[END INTERNAL CONTEXT — Your next message must be ONLY what you say to the candidate. "
-        "Do not repeat or include any of the lines above. Start directly with your first sentence to the candidate.]"
+        + "- ONE TURN = ONE QUESTION OR STATEMENT. Ask one question, then STOP.\n"
+        + "- NEVER say goodbye or conclude until you are instructed to do so in the Conclusion phase."
     )
 
 
@@ -320,10 +245,6 @@ class TimeContextLLMWrapper:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         chat_ctx = kwargs.get("chat_ctx")
         if chat_ctx is None or not isinstance(chat_ctx, llm.ChatContext):
-            logger.warning(
-                "⏰ Time context NOT injected: chat_ctx missing or not ChatContext (kwargs keys: %s)",
-                list(kwargs.keys()),
-            )
             return self._original_chat(*args, **kwargs)
 
         # 0) Intercept and hide [INTERNAL_TRIGGER] from the LLM
@@ -333,84 +254,41 @@ class TimeContextLLMWrapper:
             items = chat_ctx.items
         
         if items and len(items) > 0:
-
             last_msg = items[-1]
             last_content = getattr(last_msg, "content", "")
             if last_content == "[INTERNAL_TRIGGER]":
-                logger.debug("⏰ Intercepted [INTERNAL_TRIGGER] - hiding from LLM")
                 chat_ctx = chat_ctx.copy()
                 if hasattr(chat_ctx, "messages"):
                     chat_ctx.messages.pop()
-                    logger.debug("   [OK] Popped from chat_ctx.messages copy")
                 elif hasattr(chat_ctx, "items"):
                     chat_ctx.items.pop()
-                    logger.debug("   [OK] Popped from chat_ctx.items copy")
                 kwargs["chat_ctx"] = chat_ctx
 
-        # 1) Sanitize BEFORE any prompt construction — no internal blocks in history.
-        # Run twice to maximize cleanup (e.g. list content); never crash on leakage.
+        # 1) Sanitize history — no internal blocks in history from previous versions.
+        # This is the only "pollution" we care about now.
         sanitize_chat_context(chat_ctx)
         sanitize_chat_context(chat_ctx)
-        _log_leak_if_any(chat_ctx)
 
+        # 2) Handle first-user-message start time tracking
         start_time, duration_minutes, base_template, requires_coding = get_store()
-
-        # Start timer on first candidate message
         if start_time is None and duration_minutes is not None and duration_minutes > 0:
             if _has_user_message(chat_ctx):
                 try:
                     from services.session_time_store import set_store
                     now = get_now_ist()
                     set_store(now, duration_minutes, base_template, requires_coding)
-                    start_time = now
-                    logger.info("⏰ interview_started_at set on first candidate message")
+                    logger.info("⏰ Interview timer officially started on first candidate message")
                 except Exception as e:
                     logger.warning("Could not set interview_started_at: %s", e)
 
-        if start_time is None or duration_minutes is None or duration_minutes <= 0:
-            logger.warning(
-                "⏰ Time context NOT injected: session store not set (start_time=%s, duration=%s).",
-                "set" if start_time else "None",
-                duration_minutes,
-            )
-            _fallback = (
-                "[INTERNAL — DO NOT READ ALOUD. This is hidden context for your decision-making only.]\n\n"
-                "Time remaining: full session | Focus: Introduction\n\n"
-                "- Ask one introduction question (background, self-intro, recent work).\n"
-                "- Do NOT ask MCQs or coding problems yet.\n"
-                "- NEVER conclude or say goodbye until END_INTERVIEW.\n"
-                "[END INTERNAL CONTEXT — speak naturally to the candidate below]"
-            )
-            kwargs = {**kwargs, "chat_ctx": _chat_ctx_with_system_prepended(chat_ctx, _fallback)}
-            logger.info("⏰ Fallback time context injected (store not set)")
-            return self._original_chat(*args, **kwargs)
+        # 3) Inject turn-specific instructions (e.g. greeting, specific nudge) if set
+        # This is the ONLY transient context we prepend now.
+        turn_instructions = get_turn_instructions()
+        if turn_instructions:
+            # We still wrap turn-specific instructions so the LLM respects them as high priority
+            # But we use a clean marker that doesn't say "INTERNAL"
+            clean_instr = f"## Special Instruction for this turn:\n{turn_instructions}\n"
+            kwargs = {**kwargs, "chat_ctx": _chat_ctx_with_system_prepended(chat_ctx, clean_instr)}
 
-        try:
-            remaining_min = get_time_remaining(start_time, duration_minutes)
-            focus = get_interview_focus(remaining_min, total_duration=duration_minutes)
-
-            logger.info("Time remaining: %s min | Focus: %s", remaining_min, focus)
-
-            if _has_code_submission_override(chat_ctx):
-                minimal_msg = (
-                    "[INTERNAL — DO NOT READ ALOUD.]\n"
-                    f"Time remaining: {remaining_min} min | Focus: {_focus_display_name(focus)}\n"
-                    "- A code submission is present. Evaluate it as instructed above.\n"
-                    "- Do NOT ask the candidate to share or submit code again.\n"
-                    "[END INTERNAL CONTEXT]"
-                )
-                kwargs = {**kwargs, "chat_ctx": _chat_ctx_with_system_prepended(chat_ctx, minimal_msg)}
-                logger.info("⏰ Code submission detected — minimal time context injected")
-                return self._original_chat(*args, **kwargs)
-
-            system_prompt = _build_system_prompt(remaining_min, focus, duration_minutes)
-            
-            # 2) Inject turn-specific instructions (e.g. greeting, evaluation) if set
-            turn_instructions = get_turn_instructions()
-            if turn_instructions:
-                system_prompt = f"{system_prompt}\n\n[INTERNAL — TURN-SPECIFIC INSTRUCTIONS]\n{turn_instructions}\n[END INTERNAL CONTEXT]"
-            
-            kwargs = {**kwargs, "chat_ctx": _chat_ctx_with_system_prepended(chat_ctx, system_prompt)}
-        except Exception as e:
-            logger.warning("⏰ Could not inject time context: %s", e, exc_info=True)
         return self._original_chat(*args, **kwargs)
+

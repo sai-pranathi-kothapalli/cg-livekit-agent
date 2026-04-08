@@ -131,7 +131,8 @@ class PluginService:
             logger.info(f"   Model: {self.config.elevenlabs.stt_model}")
             stt_plugin = elevenlabs.STT(
                 api_key=self.config.elevenlabs.api_key,
-                model_id=self.config.elevenlabs.stt_model
+                model_id=self.config.elevenlabs.stt_model,
+                language_code="en"
             )
             logger.info("   [OK] ElevenLabs STT initialized")
             return stt_plugin

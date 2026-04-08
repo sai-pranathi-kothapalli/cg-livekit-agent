@@ -484,14 +484,15 @@ async def entrypoint(ctx: JobContext) -> None:
 
         # Reinforce: never conclude based on question count (overrides any recruiter "3-4 questions" type guidance)
         agent_instructions += (
-            "\n\n[INTERNAL — DO NOT SPEAK OR QUOTE THE FOLLOWING RULES]\n"
-            "REMINDER: Do NOT conclude the interview based on question count. "
-            "Having asked 3, 5, 8, or any number of questions does NOT mean the interview is over. "
-            "Only the backend sends END_INTERVIEW when time expires. Continue asking until then.\n\n"
-            "CONDITIONAL CODING: Ask coding/technical questions ONLY if the role requires technical evaluation "
-            "or the interview type includes coding or programming problems (e.g. recruiter instructions or prompt mention technical/coding evaluation or programming problems). "
-            "Programming problems means you should ask coding questions. Otherwise skip the coding phase and use that time for MCQ and logical reasoning.\n"
-            "[END INTERNAL CONTEXT]"
+            "\n\n## Interview Integrity Rules\n"
+            "- Do NOT conclude the interview based on question count. "
+            "Whether you have asked 3, 5, or more questions is not the signal to end.\n"
+            "- Only the backend will signal the interview end when the session time expires.\n"
+            "- Continue asking relevant questions until the end signal is received.\n\n"
+            "## Conditional Coding Evaluation\n"
+            "- Ask a coding or technical problem if the role requires technical evaluation "
+            "(e.g., recruiter instructions mention programming, languages like Python/Java, or coding evaluation).\n"
+            "- If no coding is mentioned, use the assessment phase for technical concepts and MCQs only.\n"
         )
         # Detect if coding is required based on keywords requested by user: python, java, sql, code, c
         _prompt_lower = ((agent_instructions or "") + (booking_prompt or "")).lower()
@@ -500,11 +501,11 @@ async def entrypoint(ctx: JobContext) -> None:
 
         if requires_coding_logic:
             agent_instructions += (
-                "\n\n[INTERNAL — DO NOT SPEAK OR QUOTE THE FOLLOWING RULES]\n"
-                "REQUIRED: This interview mentions programming, coding, or a programming language (e.g. Java, Python). You MUST ask at least one live coding question. "
-                "Ask it during the technical phase. Guide the candidate to open the code editor (</> in the bottom bar). "
-                "Do not skip the coding question; even in a short interview, include one coding problem.\n"
-                "[END INTERNAL CONTEXT]"
+                "\n\n## Mandatory Coding Requirement\n"
+                "- This role requires technical evaluation in a programming language (Java, Python, etc.).\n"
+                "- You MUST include at least one live coding question during the technical assessment.\n"
+                "- Direct the candidate to open the code editor (</> icon in the toolbar).\n"
+                "- Even in shorter interviews, do not skip the live coding exercise.\n"
             )
             logger.info("[OK] Custom prompt contains coding-related keyword; REQUIRED: at least one live coding question")
         else:
@@ -695,18 +696,14 @@ async def entrypoint(ctx: JobContext) -> None:
                 from services.time_context_llm_wrapper import generate_reply_with_instructions
                 set_skip_transcript(True)
                 greeting_instruction = (
-                    "[INTERNAL — DO NOT READ ALOUD. This is your first turn instructions.]\n"
-                    "Deliver ONLY the opening of the interview:\n"
+                    "## Initial Greeting & Opening\n"
+                    "Start the interview by following these exact steps:\n"
                     "1. Greet the candidate warmly (use their name if available) and introduce yourself briefly.\n"
                     "2. Ask exactly ONE opening question — invite them to introduce themselves "
-                    "(e.g. 'Tell me a bit about yourself and what you've been working on recently.').\n"
-                    "YOUR RESPONSE MUST END AFTER THAT ONE QUESTION. Nothing else.\n"
-                    "Do NOT ask a second question. Do NOT say 'also', 'and', or add any follow-up.\n"
-                    "Do NOT say 'thanks', 'great', or any filler after asking.\n"
-                    "Do NOT mention phases, MCQs, coding, or what comes later.\n"
-                    "Do NOT say goodbye or any closing phrase.\n"
-                    "Keep it warm, brief, and professional. Speak naturally — no brackets or labels.\n"
-                    "[END INTERNAL CONTEXT]"
+                    "(e.g. 'Tell me a bit about yourself and what you've been working on recently.').\n\n"
+                    "Constraint: Your response MUST end after that one question. Do NOT ask secondary questions, "
+                    "do NOT mention the interview format/MCQs/coding yet, and do NOT say 'also' or 'and'. "
+                    "Speak naturally and maintain a warm, professional tone."
                 )
                 await asyncio.wait_for(
                     generate_reply_with_instructions(session, instructions=greeting_instruction),

@@ -15,6 +15,7 @@ from app.utils.datetime_utils import get_now_ist  # type: ignore
 from app.utils.logger import get_logger  # type: ignore
 from utils.interview_timer import get_time_remaining, get_interview_focus  # type: ignore
 from services.time_context_llm_wrapper import generate_reply_with_instructions
+from services.instruction_manager import build_session_instructions
 
 logger = get_logger(__name__)
 
@@ -49,6 +50,11 @@ async def run_interview_time_loop(
     resolved_duration_minutes = interview_duration_minutes
     resolved_end_time: Optional[datetime] = None
     candidate_joined = False
+    
+    # Instruction management state
+    last_focus = None
+    last_instruction_update_time = None
+    base_instructions = getattr(session, 'instructions', "") # Capture initial instructions
 
     try:
         while ctx.room.isconnected() and not interview_time_limit_reached:
@@ -149,6 +155,38 @@ async def run_interview_time_loop(
                         logger.debug("⏰ Sent time remaining update: %.1f minutes", time_remaining_minutes)
                     except Exception as e:
                         logger.debug("⚠️  Failed to send time update: %s", e)
+
+            # --- SESSION INSTRUCTION UPDATES ---
+            if focus != last_focus:
+                try:
+                    new_instructions = build_session_instructions(
+                        base_instructions=base_instructions,
+                        remaining_minutes=int(remaining_min),
+                        focus=focus,
+                        duration_minutes=resolved_duration_minutes,
+                        requires_coding=requires_coding
+                    )
+                    
+                    logger.info("🆕 Updating session instructions (reason: phase_change)")
+                    logger.info("--------------------------------------------------------------------------------")
+                    logger.info("\n%s", new_instructions)
+                    logger.info("--------------------------------------------------------------------------------")
+                    
+                    from livekit.agents import Agent
+                    new_agent = Agent(
+                        instructions=new_instructions,
+                        llm=session.agent.llm if hasattr(session, 'agent') else session.current_agent.llm,
+                        chat_ctx=session.agent.chat_ctx if hasattr(session, 'agent') else session.current_agent.chat_ctx  # CRITICAL - keeps conversation history
+                    )
+                    session.update_agent(new_agent)
+                    logger.info("✅ Session instructions updated via update_agent (reason: phase_change)")
+                    print(f"⏰ Phase transition detected: {focus} — instructions updated", flush=True)
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to update agent: {e}")
+                
+                # Update last_focus AFTER firing
+                last_focus = focus
+            # -----------------------------------
 
             # Scale soft wrap threshold: 1 min for 30-min interviews, 2 min for 45-min interviews
             soft_wrap_threshold = max(1, round(resolved_duration_minutes / 30))  # 1 for 30min, 2 for 45min

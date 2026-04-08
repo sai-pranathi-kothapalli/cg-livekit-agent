@@ -18,11 +18,17 @@ INTERNAL_LINE_PATTERNS = re.compile(
     r"Phase\s+window|"
     r"Phase\s+remaining|"
     r"Interview\s+remaining|"
-    r"Time\s+remaining\s*:\s*\d+|"
-    r"Time\s+remaining\s*\d+|"
-    r"Focus\s*:\s*\w+|"
-    r"Focus\s+\w+|"
-    r"END\s+INTERNAL\s+CONTEXT",
+    r"Time\s+remaining\s*[:\-]?\s*\d+|"
+    r"Focus\s*[:\-]?\s*\w+|"
+    r"END\s+INTERNAL\s+CONTEXT|"
+    r"TECHNICAL_KNOWLEDGE|"
+    r"Current\s+Interview\s+Status|"
+    r"Phase\s+Guidance|"
+    r"Interview\s+Integrity\s+Rules|"
+    r"Mandatory\s+Coding\s+Requirement|"
+    r"\[?INTERNAL\]?|"
+    r"\[?THOUGHT\]?|"
+    r"\[?RESPONSE\]?",
     re.IGNORECASE,
 )
 
