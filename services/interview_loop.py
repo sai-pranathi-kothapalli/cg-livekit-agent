@@ -54,7 +54,18 @@ async def run_interview_time_loop(
     # Instruction management state
     last_focus = None
     last_instruction_update_time = None
-    base_instructions = getattr(session, 'instructions', "") # Capture initial instructions
+    
+    # Capture initial instructions robustly from agent object
+    current_agent_obj = (
+        session.agent if hasattr(session, 'agent') and session.agent is not None
+        else session.current_agent if hasattr(session, 'current_agent') and session.current_agent is not None
+        else None
+    )
+    base_instructions = (
+        getattr(current_agent_obj, 'instructions', "") 
+        if current_agent_obj 
+        else getattr(session, 'instructions', "")
+    ) or ""
 
     try:
         while ctx.room.isconnected() and not interview_time_limit_reached:

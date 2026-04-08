@@ -46,6 +46,10 @@ def build_session_instructions(
         "## Current Interview Status\n"
         f"- Time Remaining: {remaining_minutes} minutes (Total duration: {duration_minutes} minutes)\n"
         f"- Active Phase: {phase_name}\n\n"
+        "## CRITICAL RULE — ONE QUESTION PER TURN\n"
+        "Ask exactly ONE question then STOP immediately. "
+        "Wait for the candidate's complete response before asking anything else. "
+        "Never ask two or more questions in a single turn.\n\n"
     )
     final_prompt += status_header
     
@@ -103,7 +107,7 @@ def build_session_instructions(
 
     # Common rules
     common_rules = [
-        "ONE TURN = ONE QUESTION. Ask one question, then stop and wait.",
+        "ABSOLUTE RULE: ONE TURN = ONE QUESTION OR STATEMENT ONLY. Ask exactly ONE question then immediately STOP and wait for the candidate's full response. Do NOT ask multiple questions in the same turn. Do NOT number questions. Do NOT say 'also', 'and one more thing', or chain questions together.",
         "Only conclude when you receive the 'conclude' status guidance.",
     ]
     

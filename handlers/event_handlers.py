@@ -133,9 +133,15 @@ def setup_session_event_handlers(
                     loop = asyncio.get_running_loop()
                     async def _publish_user_transcript():
                         try:
-                            payload = json.dumps({"type": "userTranscript", "message": transcript}).encode("utf-8")
+                            payload = json.dumps({
+                                "type": "userTranscript",
+                                "message": transcript,
+                                "id": getattr(event, 'id', f"user-{int(datetime.utcnow().timestamp())}"),
+                                "timestamp": int(datetime.utcnow().timestamp() * 1000),
+                                "from": {"identity": "candidate", "isLocal": True}
+                            }).encode("utf-8")
                             await ctx.room.local_participant.publish_data(
-                                payload, topic="lk-chat", reliable=True
+                                payload, topic="user-transcript", reliable=True
                             )
                             log.debug("Sent user transcript to frontend via data channel")
                         except Exception as e:
