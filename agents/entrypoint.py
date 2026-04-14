@@ -786,7 +786,45 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("=" * 60)
         logger.info("[OK] Entrypoint Finished Successfully")
         logger.info("=" * 60)
-        
+
+        # ── AUTO-TRIGGER EVALUATION ──────────────────────────────────────────
+        # The interview loop has finished (time up OR student disconnected).
+        # We immediately call the backend evaluation endpoint so that:
+        #   1. AI analysis runs right away (no need for admin/student to open the report)
+        #   2. Webhook fires to LMS automatically — LMS students get their scores
+        if booking_token:
+            try:
+                import aiohttp
+                backend_url = os.environ.get("BACKEND_URL", "http://localhost:8000")
+                eval_url = f"{backend_url}/api/interviews/{booking_token}"
+                logger.info(f"🎯 AUTO-TRIGGER: Calling evaluation endpoint for {booking_token}...")
+                print(f"🎯 AUTO-TRIGGER: Starting evaluation for booking {booking_token}...", flush=True)
+                async with aiohttp.ClientSession() as http_session:
+                    async with http_session.get(eval_url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                        if resp.status == 200:
+                            logger.info(f"✅ AUTO-TRIGGER: Evaluation triggered successfully (status={resp.status})")
+                            print(f"✅ AUTO-TRIGGER: Evaluation done! Webhook will fire to LMS.", flush=True)
+                        else:
+                            body = await resp.text()
+                            logger.warning(f"⚠️ AUTO-TRIGGER: Evaluation returned status {resp.status}: {body[:200]}")
+                            print(f"⚠️ AUTO-TRIGGER: Evaluation returned {resp.status}", flush=True)
+            except ImportError:
+                logger.warning("⚠️ AUTO-TRIGGER: aiohttp not installed — trying urllib fallback")
+                try:
+                    import urllib.request
+                    backend_url = os.environ.get("BACKEND_URL", "http://localhost:8000")
+                    eval_url = f"{backend_url}/api/interviews/{booking_token}"
+                    req = urllib.request.Request(eval_url, method="GET")
+                    with urllib.request.urlopen(req, timeout=120) as resp:
+                        logger.info(f"✅ AUTO-TRIGGER: Evaluation complete via urllib (status={resp.status})")
+                        print(f"✅ AUTO-TRIGGER: Evaluation done via urllib!", flush=True)
+                except Exception as urllib_e:
+                    logger.error(f"❌ AUTO-TRIGGER: urllib fallback also failed: {urllib_e}")
+            except Exception as eval_e:
+                logger.error(f"❌ AUTO-TRIGGER: Failed to trigger evaluation: {eval_e}", exc_info=True)
+                print(f"❌ AUTO-TRIGGER: Evaluation trigger failed: {eval_e}", flush=True)
+        # ── END AUTO-TRIGGER ─────────────────────────────────────────────────
+
         # Wait for any pending tasks
         await asyncio.sleep(0.5)
 
