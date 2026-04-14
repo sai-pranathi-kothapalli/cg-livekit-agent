@@ -56,46 +56,27 @@ async def entrypoint(ctx: JobContext) -> None:
     """
     Main entrypoint for LiveKit agent jobs.
     """
+    import random
+    await asyncio.sleep(random.uniform(0, 8))
+
+    log_file = Path(__file__).parent.parent / "entrypoint.log"
     try:
-        # Verify noise cancellation plugin is available
-        try:
-            import livekit.plugins.noise_cancellation as nc
-            logger.info(f"✅ Noise cancellation plugin loaded (v{getattr(nc, '__version__', 'unknown')})")
-            print(f"✅ Noise cancellation plugin loaded", flush=True)
-        except ImportError:
-            logger.warning("❌ Noise cancellation plugin NOT found in this environment!")
-            print("❌ Noise cancellation plugin NOT found!", flush=True)
-        # CRITICAL: LiveKit runs entrypoint in separate process via multiprocessing
-        # We need to ensure logs are visible - use both logger.critical() AND print()
-        sys.stdout.flush()
-        sys.stderr.flush()
+        # Step 0: Ensure logs go to entrypoint.log for the session
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logging.getLogger().addHandler(file_handler)
         
-        # Force logging to appear immediately - set level to ensure visibility
-        logger.setLevel(logging.DEBUG)  # Set to DEBUG to catch everything
+        logger.setLevel(logging.INFO)
         
-        # CRITICAL: Use logger.critical() which should always appear
-        entrypoint_banner = "=" * 60
-        logger.critical(entrypoint_banner)
-        logger.critical("[PROD][PROD][PROD] AGENT ENTRYPOINT CALLED - JOB DISPATCHED [PROD][PROD][PROD]")
-        logger.critical(entrypoint_banner)
-        
-        # Write to file as backup (critical for debugging)
-        try:
-            log_file = Path(__file__).parent.parent / "entrypoint.log"
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"\n{'='*60}\n")
-                f.write(f"ENTRYPOINT CALLED: {time.time()}\n")
-                f.write(f"Job ID: {ctx.job.id}\n")
-                f.write(f"Room: {ctx.room.name}\n")
-        except Exception:
-            pass
-        
-        # Also print to stdout/stderr for maximum visibility
-        print("\n" + entrypoint_banner, flush=True, file=sys.stdout)
-        print("[PROD][PROD][PROD] AGENT ENTRYPOINT CALLED - JOB DISPATCHED [PROD][PROD][PROD]", flush=True, file=sys.stdout)
-        print(entrypoint_banner + "\n", flush=True, file=sys.stdout)
-        sys.stdout.flush()
-        
+        # Helper to log to BOTH file and terminal for the user
+        def log_info(msg):
+            logger.info(msg)
+            print(msg, flush=True)
+
+        log_info("\n" + "="*60)
+        log_info(f"🚀 AGENT SESSION STARTED: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        log_info("=" * 60)
+
         config = get_config()
         
         # Extract booking token from room name or metadata

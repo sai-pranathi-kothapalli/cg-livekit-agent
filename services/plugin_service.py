@@ -12,6 +12,7 @@ from livekit import rtc
 from livekit.plugins import (  # type: ignore
     openai,
     silero,
+    deepgram,
 )
 
 # LiveAvatar (HeyGen)
@@ -122,22 +123,19 @@ class PluginService:
         Returns:
             Configured STT plugin
         """
-        # 1. Try ElevenLabs STT
-        if self.config.elevenlabs.stt_enabled and ELEVENLABS_AVAILABLE:
-            logger.info("[DEBUG] STT CONFIGURATION: ElevenLabs")
-            if not self.config.elevenlabs.api_key:
-                raise ConfigurationError("ELEVENLABS_TTS_API_KEY is missing but ElevenLabs STT is enabled.")
-                
-            logger.info(f"   Model: {self.config.elevenlabs.stt_model}")
-            stt_plugin = elevenlabs.STT(
-                api_key=self.config.elevenlabs.api_key,
-                model_id=self.config.elevenlabs.stt_model,
-                language_code="en"
+        # 1. Try Deepgram STT
+        if self.config.deepgram.stt_enabled:
+            logger.info("[DEBUG] STT CONFIGURATION: Deepgram")
+            stt_plugin = deepgram.STT(
+                api_key=self.config.deepgram.api_key,
+                model=self.config.deepgram.model,
+                language=self.config.deepgram.language
             )
-            logger.info("   [OK] ElevenLabs STT initialized")
+            logger.info(f"   Model: {self.config.deepgram.model}")
+            logger.info("   [OK] Deepgram STT initialized")
             return stt_plugin
             
-        elif self.config.elevenlabs.stt_enabled and not ELEVENLABS_AVAILABLE:
+        elif self.config.elevenlabs.tts_enabled and not ELEVENLABS_AVAILABLE:
             raise ConfigurationError("ElevenLabs plugin not available but enabled. Install with: pip install livekit-plugins-elevenlabs")
 
         # 2. Try Self-hosted STT
