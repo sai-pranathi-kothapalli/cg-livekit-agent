@@ -93,7 +93,7 @@ async def finalize_interview(
                 interview_state_data = None
 
             # Create evaluation
-            evaluation_id = evaluation_service.calculate_evaluation_from_transcript(
+            evaluation_id = await evaluation_service.calculate_evaluation_from_transcript(
                 booking_token=booking_token,
                 room_name=room_name,
                 transcript=transcript,

@@ -5,6 +5,7 @@ Provides fallback LLM service that automatically switches to Grok (or Gemini)
 when the primary LLM service fails.
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Optional, Any
@@ -107,7 +108,51 @@ class FallbackLLMChat:
             if self._active_chat is None:
                 raise RuntimeError("Chat context not entered")
             
-            return await self._active_chat.__anext__()
+            # Add timeout to prevent indefinite hangs (30 seconds)
+            return await asyncio.wait_for(
+                self._active_chat.__anext__(),
+                timeout=30.0
+            )
+            
+        except asyncio.TimeoutError:
+            logger.error("❌ LLM call timed out after 30 seconds")
+            # Treat as recoverable error to trigger fallback
+            error_msg = "timeout"
+            is_recoverable = True
+            
+            # Only try fallback if we have one and haven't switched yet
+            if is_recoverable and self._fallback_llm and not self._using_fallback:
+                self._wrapper._primary_failures += 1
+                logger.warning(
+                    f"⚠️  Primary LLM timed out ({self._wrapper._primary_failures}/{self._wrapper._max_primary_failures}): "
+                    f"Switching to fallback"
+                )
+                
+                if self._wrapper._primary_failures >= self._wrapper._max_primary_failures:
+                    fallback_name = type(self._fallback_llm).__name__ if self._fallback_llm else "fallback"
+                    logger.warning(f"🔄 Switching to {fallback_name} fallback LLM due to timeout")
+                    self._wrapper._using_fallback = True
+                    self._using_fallback = True
+                    
+                    # Close current chat and start new one with fallback
+                    try:
+                        await self._active_chat.__aexit__(None, None, None)
+                    except Exception as cleanup_err:
+                        logger.debug(f"Ignoring chat cleanup error during fallback switch: {cleanup_err}")
+                    
+                    # Start fallback chat
+                    self._active_chat = self._fallback_llm.chat(*self._args, **self._kwargs)
+                    await self._active_chat.__aenter__()
+                    
+                    # Try to get first response from fallback
+                    try:
+                        return await self._active_chat.__anext__()
+                    except Exception as fallback_error:
+                        logger.error(f"❌ Fallback LLM also failed: {fallback_error}", exc_info=True)
+                        raise
+            
+            # Re-raise if not recoverable or no fallback available
+            raise RuntimeError("LLM call timed out after 30 seconds and no fallback available")
             
         except StopAsyncIteration:
             # Normal end of stream

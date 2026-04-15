@@ -261,8 +261,10 @@ async def entrypoint(ctx: JobContext) -> None:
                 raise RuntimeError("STT plugin is None - agent cannot hear!")
             if not plugins.get("llm"):
                 raise RuntimeError("LLM plugin is None - agent cannot think!")
+            # VAD is optional - Deepgram STT has built-in VAD
             if not plugins.get("vad"):
-                raise RuntimeError("VAD plugin is None - turn detection will fail!")
+                logger.info("[INFO] Silero VAD disabled - using Deepgram's built-in VAD")
+                print("[INFO] Silero VAD disabled - using Deepgram's built-in VAD", flush=True)
             
             logger.info("[OK] Step 4: Plugins initialized successfully!")
             print("[OK] Step 4: Plugins initialized successfully!", flush=True)
@@ -436,7 +438,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 stt=plugins["stt"],
                 llm=plugins["llm"],
                 tts=plugins["tts"],  # OpenAI TTS
-                vad=plugins["vad"],  # VAD handles turn detection when multilingual model is None
+                vad=plugins.get("vad"),  # VAD is optional - Deepgram STT has built-in VAD
                 turn_detection=turn_detector,  # Optional: None defaults to VAD-based detection
                 allow_interruptions=False,  # [OK] Disabled: Agent must finish speaking before listening
                 false_interruption_timeout=2.0,  # [OK] Wait 2 seconds before resuming after false interruption
@@ -796,7 +798,7 @@ async def entrypoint(ctx: JobContext) -> None:
             try:
                 import aiohttp
                 backend_url = os.environ.get("BACKEND_URL", "http://localhost:8000")
-                eval_url = f"{backend_url}/api/interviews/{booking_token}"
+                eval_url = f"{backend_url}/api/interviews/evaluation/{booking_token}"
                 logger.info(f"🎯 AUTO-TRIGGER: Calling evaluation endpoint for {booking_token}...")
                 print(f"🎯 AUTO-TRIGGER: Starting evaluation for booking {booking_token}...", flush=True)
                 async with aiohttp.ClientSession() as http_session:
@@ -813,7 +815,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 try:
                     import urllib.request
                     backend_url = os.environ.get("BACKEND_URL", "http://localhost:8000")
-                    eval_url = f"{backend_url}/api/interviews/{booking_token}"
+                    eval_url = f"{backend_url}/api/interviews/evaluation/{booking_token}"
                     req = urllib.request.Request(eval_url, method="GET")
                     with urllib.request.urlopen(req, timeout=120) as resp:
                         logger.info(f"✅ AUTO-TRIGGER: Evaluation complete via urllib (status={resp.status})")

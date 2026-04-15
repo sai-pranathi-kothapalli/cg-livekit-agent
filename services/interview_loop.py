@@ -51,6 +51,10 @@ async def run_interview_time_loop(
     resolved_end_time: Optional[datetime] = None
     candidate_joined = False
     
+    # Agent state monitoring - detect if agent gets stuck
+    last_agent_state = None
+    thinking_start_time: Optional[datetime] = None
+    
     # Instruction management state
     last_focus = None
     last_instruction_update_time = None
@@ -130,6 +134,33 @@ async def run_interview_time_loop(
             remaining_min = get_time_remaining(resolved_start_time, resolved_duration_minutes, now=current_time_ist)
             focus = get_interview_focus(remaining_min, total_duration=resolved_duration_minutes)
             logger.info("Time remaining: %s min | Focus: %s", remaining_min, focus)
+            
+            # Monitor agent state - detect if agent is stuck in 'thinking' state
+            if hasattr(session, 'agent_state'):
+                current_agent_state = session.agent_state
+                if current_agent_state != last_agent_state:
+                    logger.info("🤖 [AGENT STATE] %s → %s", last_agent_state, current_agent_state)
+                    last_agent_state = current_agent_state
+                    # Reset thinking timer on state change
+                    if current_agent_state == "thinking":
+                        thinking_start_time = current_time_ist
+                    else:
+                        thinking_start_time = None
+                
+                # Warn if stuck in thinking state for too long
+                if current_agent_state == "thinking" and thinking_start_time is not None:
+                    thinking_duration = (current_time_ist - thinking_start_time).total_seconds()
+                    if thinking_duration > 30:
+                        logger.warning(
+                            "⚠️ Agent stuck in 'thinking' state for %.0f seconds - LLM may be hung",
+                            thinking_duration
+                        )
+                    if thinking_duration > 60:
+                        logger.error(
+                            "❌ Agent stuck in 'thinking' state for %.0f seconds - forcing recovery",
+                            thinking_duration
+                        )
+                        # Could add recovery logic here (e.g., cancel current turn, send nudge)
 
             # If focus is conclude, treat as time limit reached (sync conclude focus with time_limit_reached)
             if focus == "conclude" and not closing_triggered:
