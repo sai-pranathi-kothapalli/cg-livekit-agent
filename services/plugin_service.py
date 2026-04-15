@@ -11,7 +11,6 @@ from livekit.agents import AgentSession
 from livekit import rtc
 from livekit.plugins import (  # type: ignore
     openai,
-    silero,
     deepgram,
 )
 
@@ -129,7 +128,7 @@ class PluginService:
             stt_plugin = deepgram.STT(
                 api_key=self.config.deepgram.api_key,
                 model=self.config.deepgram.model,
-                language=self.config.deepgram.language
+                language=self.config.deepgram.language,
             )
             logger.info(f"   Model: {self.config.deepgram.model}")
             logger.info("   [OK] Deepgram STT initialized")
@@ -309,27 +308,10 @@ class PluginService:
         
         return tts_plugin
     
-    def _initialize_vad(self) -> silero.VAD:
-        """
-        Initialize Silero VAD plugin.
-        
-        Returns:
-            Configured Silero VAD plugin
-        """
-        logger.info("[DEBUG] SILERO VAD CONFIGURATION:")
-        logger.info(f"   Min Speech Duration: {self.config.silero_vad.min_speech_duration}s")
-        logger.info(f"   Min Silence Duration: {self.config.silero_vad.min_silence_duration}s")
-        logger.info(f"   Activation Threshold: {self.config.silero_vad.activation_threshold}")
-        
-        vad_plugin = silero.VAD.load(
-            min_speech_duration=self.config.silero_vad.min_speech_duration,
-            min_silence_duration=self.config.silero_vad.min_silence_duration,
-            activation_threshold=self.config.silero_vad.activation_threshold,
-        )
-        
-        logger.info("   [OK] Silero VAD plugin initialized (optimized for background noise filtering)")
-        
-        return vad_plugin
+    def _initialize_vad(self):
+        """VAD disabled - Deepgram endpointing handles turn detection server-side."""
+        logger.info("   [INFO] Silero VAD disabled - using Deepgram endpointing (zero CPU cost)")
+        return None
     
     async def start_live_avatar(
         self,
