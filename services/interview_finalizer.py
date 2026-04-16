@@ -116,5 +116,5 @@ async def finalize_interview(
         else:
             logger.warning("⚠️  [FINALIZE] No booking token available, skipping evaluation creation")
     except Exception as e:
-        logger.warning(f"⚠️  [FINALIZE] Error creating evaluation: {e}", exc_info=True)
-        print(f"⚠️  [FINALIZE] Error creating evaluation: {e}", flush=True)
+        logger.error(f"❌ [FINALIZE] CRITICAL - Evaluation creation failed for booking {booking_token}: {e}", exc_info=True)
+        print(f"❌ [FINALIZE] CRITICAL - Evaluation creation failed: {e}", flush=True)
