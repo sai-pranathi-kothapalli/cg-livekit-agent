@@ -9,12 +9,17 @@ Filled when candidate joins (interview_loop); read by wrapper.
 from datetime import datetime
 from typing import Optional, Tuple
 
-_store: dict = {
-    "start_time": None,
-    "duration_minutes": None,
-    "base_template": "30",
-    "requires_coding": False,
-}
+from contextvars import ContextVar
+
+_store_var: ContextVar[dict] = ContextVar(
+    "session_time_store",
+    default={
+        "start_time": None,
+        "duration_minutes": None,
+        "base_template": "30",
+        "requires_coding": False,
+    }
+)
 
 
 def set_store(
@@ -24,10 +29,12 @@ def set_store(
     requires_coding: bool = False,
 ) -> None:
     """Set interview timing and requirements."""
-    _store["start_time"] = start_time
-    _store["duration_minutes"] = max(1, int(duration_minutes))
-    _store["base_template"] = base_template if base_template in ("30", "45") else "30"
-    _store["requires_coding"] = requires_coding
+    store = _store_var.get().copy()
+    store["start_time"] = start_time
+    store["duration_minutes"] = max(1, int(duration_minutes))
+    store["base_template"] = base_template if base_template in ("30", "45") else "30"
+    store["requires_coding"] = requires_coding
+    _store_var.set(store)
 
 
 def set_store_duration_only(
@@ -36,19 +43,32 @@ def set_store_duration_only(
     requires_coding: bool = False,
 ) -> None:
     """Set duration, template and requirements without start_time."""
-    _store["duration_minutes"] = max(1, int(duration_minutes))
-    _store["base_template"] = base_template if base_template in ("30", "45") else "30"
-    _store["requires_coding"] = requires_coding
+    store = _store_var.get().copy()
+    store["duration_minutes"] = max(1, int(duration_minutes))
+    store["base_template"] = base_template if base_template in ("30", "45") else "30"
+    store["requires_coding"] = requires_coding
+    _store_var.set(store)
 
 
 def get_store() -> Tuple[Optional[datetime], Optional[int], str, bool]:
     """Get interview timing and requirements. Returns (start_time, duration_minutes, base_template, requires_coding)."""
-    dur = _store.get("duration_minutes")
+    store = _store_var.get()
+    dur = store.get("duration_minutes")
     if dur is not None:
         dur = int(dur)
     return (
-        _store.get("start_time"),
+        store.get("start_time"),
         dur,
-        _store.get("base_template") or "30",
-        _store.get("requires_coding") or False,
+        store.get("base_template") or "30",
+        store.get("requires_coding") or False,
     )
+
+
+def clear_store() -> None:
+    """Clear session time store to prevent state leaks across interviews."""
+    _store_var.set({
+        "start_time": None,
+        "duration_minutes": None,
+        "base_template": "30",
+        "requires_coding": False,
+    })

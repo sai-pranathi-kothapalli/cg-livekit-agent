@@ -171,9 +171,14 @@ async def run_interview_time_loop(
             # Use resolved_end_time as authoritative when set; only then use remaining_min/elapsed.
             # This avoids premature end when remaining_min <= 0 due to any calc/timezone issue.
             if resolved_end_time is not None:
+                # [MODIFIED] Enforce hard slot end time AND relative duration limits
                 time_limit_reached = current_time_ist >= resolved_end_time
+                if scheduled_end_time is not None and current_time_ist >= scheduled_end_time:
+                    time_limit_reached = True
+                    logger.info("⏰ Hard scheduled interview end time reached (true slot end: %s)", scheduled_end_time)
+                
                 if time_limit_reached:
-                    logger.info("⏰ Interview time limit reached (true end: %s)", resolved_end_time)
+                    logger.info("⏰ Interview time limit reached (relative end: %s)", resolved_end_time)
             else:
                 elapsed_minutes = (current_time_ist - resolved_start_time).total_seconds() / 60
                 time_limit_reached = elapsed_minutes >= resolved_duration_minutes
@@ -310,6 +315,10 @@ async def run_interview_time_loop(
                         logger.info("✅ Updated booking status to 'completed' for %s", booking_token)
                     except Exception as e:
                         logger.warning("⚠️  Failed to update booking status: %s", e)
+
+                # [ADDED] Safety delay to ensure DB updates and evaluation triggers have time to negotiate
+                # before the room connection is severed and the process possibly reclaimed.
+                await asyncio.sleep(3)
 
                 try:
                     logger.info("🔌 Disconnecting from room to end interview")

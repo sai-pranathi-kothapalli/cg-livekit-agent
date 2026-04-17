@@ -41,6 +41,8 @@ def setup_session_event_handlers(
     """
     log = logger_instance or logger
     nudge_task: Optional[asyncio.Task] = None
+    last_processed_transcript: str = ""
+    last_processed_time: float = 0.0
 
     async def _run_nudge_timer():
         nonlocal nudge_task
@@ -106,8 +108,21 @@ def setup_session_event_handlers(
     @session.on("user_input_transcribed")
     def on_user_input_transcribed(event):
         try:
+            nonlocal last_processed_transcript, last_processed_time
             transcript = getattr(event, 'transcript', '') or ''
             is_final = getattr(event, 'is_final', False)
+            
+            # [DEDUPLICATION] Prevent identical rapid final transcripts
+            import time
+            current_time = time.time()
+            if is_final and transcript == last_processed_transcript and (current_time - last_processed_time) < 2.0:
+                log.debug(f"⏭️ [STT] Skipping duplicate final transcript: '{transcript}'")
+                return
+            
+            if is_final:
+                last_processed_transcript = transcript
+                last_processed_time = current_time
+
             status = "FINAL" if is_final else "INTERIM"
             log.debug(f"📝 [STT] Transcript ({status}): '{transcript}'")
 

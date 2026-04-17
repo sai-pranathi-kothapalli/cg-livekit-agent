@@ -129,6 +129,7 @@ class PluginService:
                 api_key=self.config.deepgram.api_key,
                 model=self.config.deepgram.model,
                 language=self.config.deepgram.language,
+                endpointing_ms=1500,
             )
             logger.info(f"   Model: {self.config.deepgram.model}")
             logger.info("   [OK] Deepgram STT initialized")

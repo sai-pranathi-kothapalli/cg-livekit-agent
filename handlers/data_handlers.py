@@ -204,6 +204,8 @@ def _handle_monitoring(data: rtc.DataPacket, session, log) -> None:
         instruction = None
         if alert_type == "multiple_people_detected":
             instruction = "[SYSTEM: Multiple people detected in candidate's camera. Address this firmly but professionally. Ask if someone is helping them.]"
+        elif alert_type == "looking_away":
+            instruction = "[SYSTEM: The candidate is frequently looking away from the screen. Remind them gently to keep their eyes on the screen during this proctored interview.]"
         elif alert_type == "candidate_struggling":
             emotion = payload.get('emotion', 'unknown')
             instruction = f"[SYSTEM: Candidate appears {emotion} or stressed. Be encouraging and offer a small hint if they seem stuck on the current question.]"

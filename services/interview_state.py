@@ -4,43 +4,54 @@ Interview State Store - process-local store for tracking violations and coding d
 
 from typing import List, Dict, Any
 
-_state: Dict[str, Any] = {
-    "booking_token": None,
-    "violations": [],
-    "code_submissions": [],
-    "current_question": "",
-    "latest_code": ""
-}
+from contextvars import ContextVar
+
+_state_var: ContextVar[Dict[str, Any]] = ContextVar(
+    "interview_state",
+    default={
+        "booking_token": None,
+        "violations": [],
+        "code_submissions": [],
+        "current_question": "",
+        "latest_code": ""
+    }
+)
 
 def initialize_from_db(booking_token: str, state: Dict[str, Any]) -> None:
     """
     Initialize the local state from a database record.
     """
-    _state["booking_token"] = booking_token
+    state_cpy = _state_var.get().copy()
+    state_cpy["booking_token"] = booking_token
     if state:
-        _state["violations"] = state.get("violations", [])
-        _state["code_submissions"] = state.get("code_submissions", [])
-        _state["current_question"] = state.get("current_question", "")
-        _state["latest_code"] = state.get("latest_code", "")
+        state_cpy["violations"] = state.get("violations", [])
+        state_cpy["code_submissions"] = state.get("code_submissions", [])
+        state_cpy["current_question"] = state.get("current_question", "")
+        state_cpy["latest_code"] = state.get("latest_code", "")
+    _state_var.set(state_cpy)
 
 def set_current_question(question: str) -> None:
     """
     Set the current interview question being asked.
     """
-    _state["current_question"] = question
+    state_cpy = _state_var.get().copy()
+    state_cpy["current_question"] = question
+    _state_var.set(state_cpy)
 
 def get_current_question() -> str:
     """
     Get the current interview question being asked.
     """
-    return _state.get("current_question", "")
+    return _state_var.get().get("current_question", "")
 
 def update_latest_code(code: str) -> None:
     """
     Update the latest unsaved code and trigger persistence.
     """
-    if _state["latest_code"] != code:
-        _state["latest_code"] = code
+    state_cpy = _state_var.get().copy()
+    if state_cpy["latest_code"] != code:
+        state_cpy["latest_code"] = code
+        _state_var.set(state_cpy)
         # Trigger background save
         import asyncio
         try:
@@ -52,14 +63,18 @@ def get_latest_code() -> str:
     """
     Get the latest unsaved code.
     """
-    return _state.get("latest_code", "")
+    return _state_var.get().get("latest_code", "")
 
 def add_violation(alert_type: str, message: str, timestamp: str) -> None:
-    _state["violations"].append({
+    state_cpy = _state_var.get().copy()
+    # Ensure lists are copied to prevent shared references
+    state_cpy["violations"] = list(state_cpy["violations"])
+    state_cpy["violations"].append({
         "alert_type": alert_type,
         "message": message,
         "timestamp": timestamp
     })
+    _state_var.set(state_cpy)
     # Trigger background save
     import asyncio
     try:
@@ -71,7 +86,9 @@ def add_code_submission(code: str, question: str, ai_verdict: str, execution_out
     """
     Store a code submission for later evaluation.
     """
-    _state["code_submissions"].append({
+    state_cpy = _state_var.get().copy()
+    state_cpy["code_submissions"] = list(state_cpy["code_submissions"])
+    state_cpy["code_submissions"].append({
         "code": code,
         "question": question,
         "ai_verdict": ai_verdict,
@@ -84,6 +101,7 @@ def add_code_submission(code: str, question: str, ai_verdict: str, execution_out
         "submitted_empty": len(code.strip().splitlines()) < 1,
         "probe_responses": []
     })
+    _state_var.set(state_cpy)
     # Trigger background save
     import asyncio
     try:
@@ -97,12 +115,19 @@ def add_probe_response(probe_question: str, candidate_response: str):
     Useful for integrity analysis.
     """
     # Find the most recent code submission and attach the probe
-    if _state["code_submissions"]:
-        latest = _state["code_submissions"][-1]
+    state_cpy = _state_var.get().copy()
+    if state_cpy["code_submissions"]:
+        state_cpy["code_submissions"] = list(state_cpy["code_submissions"])
+        latest = state_cpy["code_submissions"][-1]
+        # Make a copy of the dictionary to safely mutate
+        latest = latest.copy()
+        latest["probe_responses"] = list(latest.get("probe_responses", []))
         latest["probe_responses"].append({
             "probe_question": probe_question,
             "candidate_response": candidate_response
         })
+        state_cpy["code_submissions"][-1] = latest
+        _state_var.set(state_cpy)
         # Trigger background save
         import asyncio
         try:
@@ -114,25 +139,31 @@ def update_latest_ai_verdict(ai_verdict: str) -> None:
     """
     Update the ai_verdict of the most recent code submission.
     """
-    if _state["code_submissions"]:
-        _state["code_submissions"][-1]["ai_verdict"] = ai_verdict
+    state_cpy = _state_var.get().copy()
+    if state_cpy["code_submissions"]:
+        state_cpy["code_submissions"] = list(state_cpy["code_submissions"])
+        latest = state_cpy["code_submissions"][-1].copy()
+        latest["ai_verdict"] = ai_verdict
+        state_cpy["code_submissions"][-1] = latest
+        _state_var.set(state_cpy)
 
 def get_state() -> Dict[str, Any]:
     """
     Get the current interview state (excluding process-only metadata like booking_token).
     """
+    store = _state_var.get()
     return {
-        "violations": _state["violations"],
-        "code_submissions": _state["code_submissions"],
-        "current_question": _state["current_question"],
-        "latest_code": _state["latest_code"]
+        "violations": store["violations"],
+        "code_submissions": store["code_submissions"],
+        "current_question": store["current_question"],
+        "latest_code": store["latest_code"]
     }
 
 async def save_to_backend() -> bool:
     """
     Persist the current state to the backend evaluations table.
     """
-    token = _state.get("booking_token")
+    token = _state_var.get().get("booking_token")
     if not token:
         return False
         
@@ -157,8 +188,10 @@ def clear_state() -> None:
     """
     Clear the interview state for a new session.
     """
-    _state["booking_token"] = None
-    _state["violations"].clear()
-    _state["code_submissions"].clear()
-    _state["current_question"] = ""
-    _state["latest_code"] = ""
+    _state_var.set({
+        "booking_token": None,
+        "violations": [],
+        "code_submissions": [],
+        "current_question": "",
+        "latest_code": ""
+    })

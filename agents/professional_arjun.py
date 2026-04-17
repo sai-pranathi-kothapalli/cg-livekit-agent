@@ -48,7 +48,7 @@ class ProfessionalArjun(Agent):
         
         super().__init__(
             instructions=instructions,
-            min_endpointing_delay=0.0,
+            min_endpointing_delay=1.0,
         )
         
         logger.info(

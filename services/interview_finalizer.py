@@ -104,7 +104,9 @@ async def finalize_interview(
             # Clear state to prevent leaks into next session in same process (if re-used)
             try:
                 from services import interview_state
+                from services.session_time_store import clear_store
                 interview_state.clear_state()
+                clear_store()
             except:
                 pass
 
@@ -113,6 +115,30 @@ async def finalize_interview(
                 print(f"✅ [FINALIZE] Evaluation created: {evaluation_id}", flush=True)
             else:
                 logger.warning("⚠️  [FINALIZE] Failed to create evaluation")
+
+            # ── AUTO-TRIGGER EVALUATION ──────────────────────────────────────
+            # Notify backend to start AI analysis immediately (Gemini & Webhooks)
+            # This is moved here to ensure it runs during worker finalization cleanup
+            try:
+                import os
+                import aiohttp
+                backend_url = os.environ.get("BACKEND_URL", "http://localhost:8000")
+                eval_url = f"{backend_url}/api/interviews/evaluation/{booking_token}"
+                
+                logger.info(f"🎯 [FINALIZE] Auto-triggering evaluation for {booking_token}...")
+                print(f"🎯 [FINALIZE] Triggering AI analysis for {booking_token}...", flush=True)
+                
+                # Use a separate session and timeout to avoid hanging the finalizer too long
+                async with aiohttp.ClientSession() as http_session:
+                    async with http_session.get(eval_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                        if resp.status == 200:
+                            logger.info(f"✅ [FINALIZE] Evaluation triggered successfully")
+                        else:
+                            logger.warning(f"⚠️  [FINALIZE] Evaluation trigger returned status {resp.status}")
+            except Exception as eval_e:
+                logger.warning(f"⚠️  [FINALIZE] Failed to auto-trigger evaluation: {eval_e}")
+            # ─────────────────────────────────────────────────────────────────
+
         else:
             logger.warning("⚠️  [FINALIZE] No booking token available, skipping evaluation creation")
     except Exception as e:
