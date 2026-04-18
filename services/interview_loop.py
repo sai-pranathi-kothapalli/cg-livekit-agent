@@ -35,6 +35,7 @@ async def run_interview_time_loop(
     slot_start_ist: Optional[datetime] = None,
     scheduled_duration_minutes: Optional[int] = None,
     requires_coding: bool = False,
+    is_technical: bool = True,
 ) -> None:
     """
     Run the main time loop until interview ends or room disconnects.
@@ -88,6 +89,7 @@ async def run_interview_time_loop(
                         from services.session_time_store import set_store_duration_only
                         from app.services.history_managed_llm_wrapper import reset_questions_asked  # type: ignore
                         set_store_duration_only(actual_duration, base_template, requires_coding)
+                        # Store is_technical in the session if needed (optional)
                         reset_questions_asked()
                     except Exception as e:
                         logger.warning("Could not set session time store: %s", e)
@@ -211,7 +213,8 @@ async def run_interview_time_loop(
                         remaining_minutes=int(remaining_min),
                         focus=focus,
                         duration_minutes=resolved_duration_minutes,
-                        requires_coding=requires_coding
+                        requires_coding=requires_coding,
+                        is_technical=is_technical
                     )
                     
                     logger.info("🆕 Updating session instructions (reason: phase_change)")

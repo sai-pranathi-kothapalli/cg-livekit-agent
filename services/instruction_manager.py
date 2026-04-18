@@ -26,7 +26,8 @@ def build_session_instructions(
     remaining_minutes: int,
     focus: str,
     duration_minutes: int,
-    requires_coding: bool = False
+    requires_coding: bool = False,
+    is_technical: bool = True
 ) -> str:
     """
     Combine base instructions with current phase and timing.
@@ -69,6 +70,7 @@ def build_session_instructions(
             "Freely mix deep technical questions and single-answer MCQs based on the candidate's depth.",
             "Choose question types that fit the conversation naturally.",
             "Do NOT ask coding/debugging problems yet.",
+            "If this is a non-technical interview, focus on behavioral scenarios and communication clarity." if not is_technical else "Focus on technical depth and conceptual understanding.",
         ]
     elif focus == "coding_window":
         if requires_coding:
@@ -79,12 +81,20 @@ def build_session_instructions(
                 "Prioritize coding over pure MCQs in this phase.",
             ]
         else:
-            instructions = [
-                "You are in the ADVANCED TECHNICAL phase.",
-                "Focus on complex scenarios and architectural trade-offs.",
-                "MCQs are also encouraged to test broad knowledge.",
-                "Do NOT ask the candidate to write code or open the code editor.",
-            ]
+            if is_technical:
+                instructions = [
+                    "You are in the ADVANCED TECHNICAL phase.",
+                    "Focus on complex scenarios and architectural trade-offs.",
+                    "MCQs are also encouraged to test broad knowledge.",
+                    "Do NOT ask the candidate to write code or open the code editor.",
+                ]
+            else:
+                instructions = [
+                    "You are in the COMMUNICATION & SCENARIO phase.",
+                    "Focus on soft skills, situational judgment, and workplace scenarios.",
+                    "Analyze logical consistency and professional tone.",
+                    "Do NOT ask any technical or coding questions.",
+                ]
     elif focus == "mixed":
         instructions = [
             "You are in the MIXED phase — use a varied combination of question types.",

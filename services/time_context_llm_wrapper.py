@@ -260,8 +260,12 @@ class TimeContextLLMWrapper:
                 chat_ctx = chat_ctx.copy()
                 if hasattr(chat_ctx, "messages"):
                     chat_ctx.messages.pop()
+                    if not chat_ctx.messages:
+                        chat_ctx.messages.append(llm.ChatMessage(role="user", content="Begin."))
                 elif hasattr(chat_ctx, "items"):
                     chat_ctx.items.pop()
+                    if not chat_ctx.items:
+                        chat_ctx.items.append(llm.ChatMessage(role="user", content="Begin."))
                 kwargs["chat_ctx"] = chat_ctx
 
         # 1) Sanitize history — no internal blocks in history from previous versions.

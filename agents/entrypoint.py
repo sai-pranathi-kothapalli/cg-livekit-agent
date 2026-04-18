@@ -15,8 +15,9 @@ from typing import Optional, Any, Dict, List
 from datetime import datetime, timedelta
 
 from livekit import agents, rtc
-from livekit.agents import JobContext, AgentSession, room_io
+from livekit.agents import JobContext, AgentSession, room_io, TurnHandlingOptions
 from livekit.plugins import noise_cancellation
+from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 # Add backend to Python path so we can import from app (sniff common paths)
 from pathlib import Path
@@ -450,15 +451,14 @@ async def entrypoint(ctx: JobContext) -> None:
                 stt=plugins["stt"],
                 llm=plugins["llm"],
                 tts=plugins["tts"],  # OpenAI TTS
-                vad=plugins.get("vad"),  # VAD is optional - Deepgram STT has built-in VAD
-                turn_detection=turn_detector,  # Optional: None defaults to VAD-based detection
-                allow_interruptions=False,  # [OK] Disabled: Agent must finish speaking before listening
-                false_interruption_timeout=2.0,  # [OK] Wait 2 seconds before resuming after false interruption
-                resume_false_interruption=True,  # [OK] Auto-resume if background noise triggers VAD
-                # CRITICAL: Increase min_endpointing_delay to give STT more time to finalize
-                min_endpointing_delay=2.0,
+                vad=None,
+                turn_handling=TurnHandlingOptions(
+                    turn_detection=MultilingualModel(),
+                    min_delay=1.0,
+                    max_delay=3.0,
+                )
             )
-            logger.info("[OK] Step 6: Success - AgentSession created!")
+            logger.info("[OK] Step 6: Success - AgentSession created with Turn Detector!")
             print("[OK] Step 6: Success - AgentSession created!", flush=True)
         except Exception as e:
             error_msg = f"[ERR] Step 6: Failed to create AgentSession - {e}"
@@ -491,8 +491,9 @@ async def entrypoint(ctx: JobContext) -> None:
         )
         # Detect if coding is required based on keywords requested by user: python, java, sql, code, c
         _prompt_lower = ((agent_instructions or "") + (booking_prompt or "")).lower()
-        _technical_keywords = ("python", "java", "sql", "code", "c ", " c ", "cpp", "javascript", "typescript", "coding", "programming")
-        requires_coding_logic = any(kw in _prompt_lower for kw in _technical_keywords)
+        _technical_keywords = ("python", "java", "sql", "code", "c ", " c ", "cpp", "javascript", "typescript", "coding", "programming", "technical", "algorithm", "database", "system design", "frontend", "backend", "fullstack", "devops")
+        requires_coding_logic = any(kw in _prompt_lower for kw in _technical_keywords[:11]) # coding-specific
+        is_technical_logic = any(kw in _prompt_lower for kw in _technical_keywords)
 
         if requires_coding_logic:
             agent_instructions += (
@@ -795,6 +796,7 @@ async def entrypoint(ctx: JobContext) -> None:
             slot_start_ist=slot_start_ist_loop,
             scheduled_duration_minutes=scheduled_duration_minutes,
             requires_coding=requires_coding_logic,
+            is_technical=is_technical_logic,
         )
 
         # ── SUCCESS ──────────────────────────────────────────────────────────
