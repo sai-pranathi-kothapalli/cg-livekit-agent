@@ -15,9 +15,16 @@ from typing import Optional, Any, Dict, List
 from datetime import datetime, timedelta
 
 from livekit import agents, rtc
-from livekit.agents import JobContext, AgentSession, room_io, TurnHandlingOptions
+from livekit.agents import JobContext, AgentSession, room_io
+
+try:
+    from livekit.plugins.turn_detector.multilingual import MultilingualModel
+    from livekit.agents import TurnHandlingOptions
+    TURN_DETECTOR_AVAILABLE = True
+except ImportError:
+    TURN_DETECTOR_AVAILABLE = False
+
 from livekit.plugins import noise_cancellation
-from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 # Add backend to Python path so we can import from app (sniff common paths)
 from pathlib import Path
@@ -447,18 +454,26 @@ async def entrypoint(ctx: JobContext) -> None:
         logger.info("Step 6: Creating AgentSession...")
         print("Step 6: Creating AgentSession...", flush=True)
         try:
-            session = AgentSession(
-                stt=plugins["stt"],
-                llm=plugins["llm"],
-                tts=plugins["tts"],  # OpenAI TTS
-                vad=None,
-                turn_handling=TurnHandlingOptions(
-                    turn_detection=MultilingualModel(),
-                    min_delay=1.0,
-                    max_delay=3.0,
+            if TURN_DETECTOR_AVAILABLE:
+                session = AgentSession(
+                    stt=plugins["stt"],
+                    llm=plugins["llm"],
+                    tts=plugins["tts"],  # OpenAI TTS
+                    vad=None,
+                    turn_handling=TurnHandlingOptions(
+                        turn_detection=MultilingualModel(),
+                        min_delay=1.0,
+                        max_delay=3.0,
+                    )
                 )
-            )
-            logger.info("[OK] Step 6: Success - AgentSession created with Turn Detector!")
+            else:
+                session = AgentSession(
+                    stt=plugins["stt"],
+                    llm=plugins["llm"],
+                    tts=plugins["tts"],  # OpenAI TTS
+                    vad=None,
+                )
+            logger.info("[OK] Step 6: Success - AgentSession created!")
             print("[OK] Step 6: Success - AgentSession created!", flush=True)
         except Exception as e:
             error_msg = f"[ERR] Step 6: Failed to create AgentSession - {e}"
